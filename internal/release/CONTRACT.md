@@ -48,3 +48,21 @@ kinds: migration, dependency, configuration, deployment, feature_flag,
 compatibility, rollback, runbook, environment, incident, check, security.
 This adapter trusts host configuration and supplied local records; it does not
 assert that a string producer label proves remote cryptographic provenance.
+
+## Deterministic selector rules
+
+`Input.ChangedPaths []ChangedPath{OldPath,NewPath}` is the complete host Git diff
+manifest. `Policy.Rules []Rule{ID,Paths,Risk,RequiredEvidence,BlockIfMissing,Signoff}`
+uses the documented policy.Match glob dialect and evaluates BOTH rename paths.
+All matches contribute floors; no first-match exclusion. Rules establish only
+path category membership, not destructive-migration or incompatible-API semantics.
+Required evidence must be present/verified_absent at the captured candidate.
+Missing evidence produces incomplete readiness, or a blocker when configured;
+configured Signoff is an outstanding human requirement.
+
+Nonempty net diff with nil manifest and configured selectors refuses inference.
+An explicitly empty nonnil manifest represents verified no changed paths.
+Invalid patterns, rule identities, risk values, evidence IDs or manifest paths
+fail closed. `Result.SelectorPaths`, `SelectorManifestKnown` and `SelectorFacts`
+persist inputs and matched path/evidence facts. `Reevaluate` applies current rules
+to those immutable saved facts without calling a model.

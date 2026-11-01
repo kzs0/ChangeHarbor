@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/kzs0/reviewd/internal/release"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,8 +74,23 @@ func TestCLIContextJournalAndReleaseScope(t *testing.T) {
 	if !in.BaselineAncestor || !in.JournalComplete || !in.SourceComplete || in.Identity.BaselineOID == in.Identity.CandidateOID || !strings.Contains(in.NetDiff, "println") {
 		t.Fatalf("scope %#v", in)
 	}
+	if len(in.ChangedPaths) != 1 || len(in.Evidence) != 2 || len(in.SourceAnchors) == 0 {
+		t.Fatalf("source evidence and complete manifest missing: %#v", in)
+	}
+	fake := &selectorFixtureModel{}
+	assessed, err := release.Assess(ctx, in, release.Policy{Rules: []release.Rule{{ID: "source-change", Paths: []string{"**/*.go"}, Risk: release.High, RequiredEvidence: []string{"recovery-plan"}, BlockIfMissing: true}}}, fake)
+	if err != nil || fake.calls != 1 || assessed.EffectiveRisk == nil || *assessed.EffectiveRisk != release.High || assessed.Readiness != "blocked" {
+		t.Fatalf("selector integration %#v calls=%d err=%v", assessed, fake.calls, err)
+	}
 	items, e := reviewContext(ctx, state, repo, in.Identity.CandidateOID, in.NetDiff)
 	if e != nil || len(items) != 2 {
 		t.Fatalf("materialization %#v %v", items, e)
 	}
+}
+
+type selectorFixtureModel struct{ calls int }
+
+func (m *selectorFixtureModel) Complete(ctx context.Context, request release.Request) (release.Response, error) {
+	m.calls++
+	return release.Response{Body: []byte(`{"schema_version":1,"model_estimated_risk":"low","risk_rationale":"fixture","evidence_ids":["net_diff"],"notable_changes":[],"required_actions":[],"rollback_and_recovery_notes":[]}`)}, nil
 }

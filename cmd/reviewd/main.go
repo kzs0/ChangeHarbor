@@ -340,7 +340,7 @@ func (m releaseModel) Complete(ctx context.Context, r release.Request) (release.
 	if v.ToolCalls {
 		tools = 1
 	}
-	return release.Response{Body: v.Raw, Truncated: v.Truncated, ToolCalls: tools}, e
+	return release.Response{Body: v.Raw, Truncated: v.Truncated, Refused: v.Refused, ToolCalls: tools}, e
 }
 
 type identityModel struct {

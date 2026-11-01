@@ -408,6 +408,14 @@ func localReleaseInput(ctx context.Context, repo, baseline, candidate, branch, s
 		return in, e
 	}
 	in.NetDiff = d.Patch
+	in.ChangedPaths = make([]release.ChangedPath, 0, len(d.Files))
+	for _, file := range d.Files {
+		in.ChangedPaths = append(in.ChangedPaths, release.ChangedPath{OldPath: file.OldPath, NewPath: file.NewPath})
+	}
+	in.Evidence = append(in.Evidence, release.Evidence{ID: "net_diff", Kind: "source", State: "present", CandidateOID: head, Required: true, Content: "Exact source change supplied in NetDiff"})
+	for _, anchor := range d.Anchors {
+		in.SourceAnchors = append(in.SourceAnchors, release.SourceAnchor{EvidenceID: "net_diff", Path: anchor.Path, Line: anchor.Line})
+	}
 	in.SourceComplete = true
 	s, e := storage.Open(state)
 	if e != nil {
@@ -446,6 +454,7 @@ func localReleaseInput(ctx context.Context, repo, baseline, candidate, branch, s
 		return in, e
 	}
 	in.Inventory = string(b)
+	in.Evidence = append(in.Evidence, release.Evidence{ID: "release_inventory", Kind: "journal", State: "present", CandidateOID: head, Required: true, Content: "Exact verified landed inventory supplied in Inventory"})
 	in.JournalComplete = true
 	return in, nil
 }

@@ -25,3 +25,11 @@ Evaluation rejects duplicate fixture keys, including case variants, so a later d
 ## Checks
 
 Focused standard tests pass for release, report, archive and evaluate. Focused race tests and vet are run separately; see final validation record for their results. These tests require no model credentials or external network.
+
+## Final selector and classified-schema review
+
+Release path selectors were checked against full old/new rename manifests. Regression tests confirm all matching floors are in the serialized prompt before inference and that signoff/risk reevaluation performs no additional completion. Factual classified items can cite the CLI's net_diff and release_inventory identities and exact host-whitelisted net-diff source anchors.
+
+Fixed required-plan semantics: verified_absent no longer satisfies a selector's RequiredEvidence. A verified absence of a recovery plan must trigger the configured missing-plan blocker, while verified_absent remains available for ordinary completeness categories. Also made iteration over classified model groups deterministic so identical responses produce consistently ordered caveats.
+
+Final focused race tests and vet pass for release, report, archive and evaluate using the isolated final cache. No external HTTP or model service was used by these tests.
