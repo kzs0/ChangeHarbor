@@ -404,6 +404,15 @@ func PublishSummaries(ctx context.Context, s *storage.Store, base Snapshot, buil
 	if err := Validate(base); err != nil {
 		return Snapshot{}, err
 	}
+	canonicalBase, err := Load(ctx, s, base.ID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	canonicalBody, _ := json.Marshal(canonicalBase)
+	suppliedBase, _ := json.Marshal(base)
+	if !bytes.Equal(canonicalBody, suppliedBase) {
+		return Snapshot{}, errors.New("summary base differs from pinned immutable snapshot")
+	}
 	if build.Status != "completed" || build.SnapshotID != base.ID || build.ID == "" {
 		return Snapshot{}, errors.New("summary build is not a complete result for this snapshot")
 	}

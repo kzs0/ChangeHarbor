@@ -78,6 +78,11 @@ func TestHistoryCoverageDoesNotInventZero(t *testing.T) {
 	if e = mergeingest.CaptureHistoryCoverage(ctx, s, c); e != nil {
 		t.Fatal(e)
 	}
+	missingAncestry, e := mergeingest.History(ctx, s, q)
+	if e != nil || missingAncestry.Complete {
+		t.Fatal("missing ancestry established verified-zero familiarity", missingAncestry, e)
+	}
+	q.Ancestry = []string{q.TargetOID}
 	out, e = mergeingest.History(ctx, s, q)
 	if e != nil || !out.Complete || len(out.Records) != 0 {
 		t.Fatal("verified absent history not preserved", out, e)

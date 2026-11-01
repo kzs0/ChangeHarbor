@@ -341,6 +341,10 @@ func History(ctx context.Context, s *storage.Store, q HistoryQuery) (HistoryResu
 	for _, oid := range q.Ancestry {
 		member[oid] = true
 	}
+	if !member[q.TargetOID] {
+		out.Complete = false
+		out.Limitations = append(out.Limitations, "captured target ancestry unavailable")
+	}
 	for _, r := range records {
 		e := r.Evidence
 
