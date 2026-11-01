@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -141,6 +143,9 @@ func (a *HTTP) Complete(ctx context.Context, r Request) (Response, error) {
 		return out, fmt.Errorf("model request byte cap exceeded")
 	}
 	input := int64(len(body)) * int64(c.InputTokensPerByte)
+	if input < 0 || input > math.MaxInt64-int64(l.MaxOutputTokens) {
+		return out, fmt.Errorf("token reservation overflow")
+	}
 	per := input + int64(l.MaxOutputTokens)
 	if per > int64(c.ContextTokens) || per > l.MaxTotalTokens/int64(l.MaxAttempts) {
 		return out, fmt.Errorf("context or aggregate token cap exceeded")
@@ -148,11 +153,24 @@ func (a *HTTP) Complete(ctx context.Context, r Request) (Response, error) {
 	if c.PricingKnown && (c.InputPriceMicrosPerMillion < 0 || c.OutputPriceMicrosPerMillion < 0) {
 		return out, fmt.Errorf("negative model pricing")
 	}
-	cost := func(in, out int64) int64 {
-		return (in*c.InputPriceMicrosPerMillion + out*c.OutputPriceMicrosPerMillion + 999999) / 1000000
+	cost := func(in, output int64) (int64, error) {
+		n := new(big.Int).Mul(big.NewInt(in), big.NewInt(c.InputPriceMicrosPerMillion))
+		n.Add(n, new(big.Int).Mul(big.NewInt(output), big.NewInt(c.OutputPriceMicrosPerMillion)))
+		n.Add(n, big.NewInt(999999))
+		n.Quo(n, big.NewInt(1000000))
+		if !n.IsInt64() {
+			return 0, fmt.Errorf("model cost overflow")
+		}
+		return n.Int64(), nil
 	}
-	if l.MaxCostMicros > 0 && cost(input, int64(l.MaxOutputTokens)) > l.MaxCostMicros/int64(l.MaxAttempts) {
-		return out, fmt.Errorf("aggregate model cost cap exceeded")
+	if c.PricingKnown {
+		estimated, err := cost(input, int64(l.MaxOutputTokens))
+		if err != nil {
+			return out, err
+		}
+		if l.MaxCostMicros > 0 && estimated > l.MaxCostMicros/int64(l.MaxAttempts) {
+			return out, fmt.Errorf("aggregate model cost cap exceeded")
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, l.Timeout)
 	defer cancel()
@@ -293,7 +311,10 @@ func (a *HTTP) Complete(ctx context.Context, r Request) (Response, error) {
 			return out, fmt.Errorf("provider usage exceeds reserved budget")
 		}
 		if c.PricingKnown && out.Usage.Known {
-			n := cost(out.Usage.InputTokens, out.Usage.OutputTokens)
+			n, err := cost(out.Usage.InputTokens, out.Usage.OutputTokens)
+			if err != nil {
+				return out, err
+			}
 			out.Usage.CostMicros = &n
 			out.Usage.CostIsEstimate = true
 		}
