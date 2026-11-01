@@ -1,0 +1,3 @@
+# Packing contract
+Item {ID,Layer,Content string; Required bool}. Limits {MaxBytes,MaxTokens,ReserveTokens int}. Entry {ID,Status string}. Package {Prompt []byte; Coverage []Entry; Complete bool; Digest string; EstimatedTokens int}. Pack(ctx, []Item, Limits) (Package,error).
+Deterministically preserve input order; required items take priority over optional items. Serialize actual prompt including IDs/layers as JSON, conservatively bound tokens by UTF-8 bytes (not byte/4), account reserve; overflow required item has not_included_budget coverage and Complete false. Optional omissions are explicit and do not make Complete false. Reject nonpositive caps/reserve >= MaxTokens, duplicate/empty IDs. SHA256 prompt digest. No inference. Canceled contexts error.
