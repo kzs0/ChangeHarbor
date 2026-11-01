@@ -1,0 +1,1 @@
+{"schema_version":1,"summary":"Offline fixture review","findings":[],"unresolved_questions":[],"model_merge_risk":2,"merge_risk_rationale":"Fixture only; no semantic review performed","merge_risk_evidence_ids":["diff"],"limitations":["Deterministic fake response; not a production assessment"]}

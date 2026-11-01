@@ -1,0 +1,1 @@
+{"schema_version":1,"model_estimated_risk":"moderate","risk_rationale":"Offline fixture only","evidence_ids":[],"notable_changes":["Fixture change"],"required_actions":["Engineer must verify real source and evidence"],"rollback_and_recovery_notes":[]}

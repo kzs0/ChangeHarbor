@@ -1,0 +1,1 @@
+{"Identity":{"Repository":"fixture","BaselineRef":"v1","BaselineOID":"baseline-oid","CandidateRef":"v2","CandidateOID":"candidate-oid"},"BaselineAncestor":true,"JournalComplete":true,"SourceComplete":true,"Inventory":"Fixture change inventory","NetDiff":"Fixture only","MaxRequestBytes":100000}
