@@ -1,0 +1,595 @@
+<div id="review-design-v2">
+<style>
+#review-design-v2 { color:inherit; }
+#review-design-v2 details { margin:16px 0; }
+#review-design-v2 summary { padding:12px 0; font-weight:500; }
+#review-design-v2 p, #review-design-v2 li { overflow-wrap:anywhere; }
+#review-design-v2 pre { white-space:pre-wrap; overflow-wrap:anywhere; padding:16px; background:color-mix(in srgb,currentColor 6%,transparent); }
+#review-design-v2 table { width:100%; border-collapse:collapse; }
+#review-design-v2 th, #review-design-v2 td { padding:10px 8px; text-align:left; vertical-align:top; border-bottom:1px solid color-mix(in srgb,currentColor 20%,transparent); overflow-wrap:anywhere; }
+#review-design-v2 figure { margin:16px auto; max-width:440px; }
+#review-design-v2 .flow-v2 { display:block; width:100%; height:auto; color:inherit; }
+#review-design-v2 .flow-v2 rect { fill:none; stroke:currentColor; stroke-width:1; }
+#review-design-v2 .flow-v2 text { fill:currentColor; stroke:none; }
+</style>
+<h1>Batched Code Review and Release Assessment</h1>
+<p>Implementation specification version 3 · November 1, 2026</p>
+<p>Status: implementation specification version 3   Date: November 1, 2026   Audience: implementation agent and project maintainer   Working executable name: <code>reviewd</code></p>
+<details open><summary>1 Purpose and authoritative decisions</summary>
+<p>Build a self-hosted Go service inspired by PR-Agent. Host code assembles a bounded context package and submits one batched prompt for each PR review. The model returns a structured review and a 1–10 merge-risk estimate in that same response. Go code validates the result and enforces approval minimums.</p>
+<p>Repository context is maintained separately. Every merged PR or MR must be incorporated into an append-only change journal, whether or not this service reviewed or approved it. Periodic context builds compact accumulated changes into a new immutable base snapshot. A pre-release mode assembles the base context, release-range journal entries, exact changes, and operational evidence into one batched release assessment for the release engineer and a draft release-channel update.</p>
+<p>These decisions supersede the first design:</p>
+<ul>
+<li>One logical model request per review. No model tools, read-only exploration loop, agent turns, adaptive retrieval, or automatic per-file/chunk review calls.</li>
+<li>All source gathering and selection happen deterministically before inference.</li>
+<li>A 1–10 merge-risk estimate is part of the review response; user-configured thresholds and deterministic risk floors govern approval eligibility in Go. No second approval model call.</li>
+<li>Every merge is journaled; scheduled compaction does not replace merge ingestion.</li>
+<li>Pre-release assessment is a first-class mode with its own scope, input budget, schema, deterministic risk minimums, and reports.</li>
+</ul>
+<p>Use PR-Agent&#x27;s behavior as a reference, not a requirement for complete feature parity. Deliver an implementation rather than a general agent framework. Start with the vertical slice in Section 18.</p>
+</details>
+<details><summary>2 Scope and outcomes</summary>
+<p>Required: GitHub/GitLab adapters; immutable revision identities; independently maintained snapshots; merge ingestion and recovery; deterministic context packing; one batched PR review; approval enforcement; one batched pre-release assessment; structured records and readable reports; strict token and cost limits; offline fake-model tests.</p>
+<p>Excluded initially: autofix, code writes, automatic merges, deployment execution, model-callable tools, arbitrary shell execution, cross-repository analysis, embeddings, a web dashboard, and outbound release-channel messaging. The system generates a channel-ready draft. It does not post it without a separately authorized integration.</p>
+<p>The host may perform bounded source reads and index lookups during assembly. The model cannot request additional context. If the assembled input is insufficient, the model must return questions or <code>human_required</code>; it cannot initiate further work.</p>
+<p>Default approval mode is shadow. Default PR mode reviews the complete current PR diff. Reuse an identical completed review when its full input identity matches; defer partial-PR coverage reuse until measured and independently specified.</p>
+</details>
+<details><summary>3 Architecture and execution flow</summary>
+<figure>
+<svg class="flow-v2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 740" role="img" aria-labelledby="flow-title-v2 flow-desc-v2">
+<title id="flow-title-v2">Batched review and release assessment flow</title>
+<desc id="flow-desc-v2">Scheduled snapshots and every merged change feed deterministic context assembly. A PR or release request uses that assembly for one model prompt. Go rules then govern approval or release risk and report generation.</desc>
+<defs><marker id="flow-arrow-v2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="currentColor"/></marker></defs>
+<g fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#flow-arrow-v2)">
+<path d="M30 50 H12 V410 H30"/>
+<path d="M160 170 V200"/>
+<path d="M290 230 H308 V410 H290"/>
+<path d="M160 350 V380"/>
+<path d="M160 440 V470"/>
+<path d="M160 530 V560"/>
+<path d="M160 620 V650"/>
+</g>
+<g font-family="Arial, Helvetica, sans-serif" font-size="14" text-anchor="middle" dominant-baseline="middle">
+<rect x="30" y="20" width="260" height="60" rx="6"/>
+<text x="160" y="40">Scheduled context build</text><text x="160" y="60">Immutable base snapshot</text>
+<rect x="30" y="110" width="260" height="60" rx="6"/>
+<text x="160" y="130">Every merged PR or MR</text><text x="160" y="150">Direct pushes and catch-up</text>
+<rect x="30" y="200" width="260" height="60" rx="6"/>
+<text x="160" y="220">Journal actual landed changes</text><text x="160" y="240">Invalidate stale context</text>
+<rect x="30" y="290" width="260" height="60" rx="6"/>
+<text x="160" y="310">PR or pre-release request</text><text x="160" y="330">Exact scope and evidence</text>
+<rect x="30" y="380" width="260" height="60" rx="6"/>
+<text x="160" y="400">Deterministic context assembly</text><text x="160" y="420">Budget and completeness ledger</text>
+<rect x="30" y="470" width="260" height="60" rx="6"/>
+<text x="160" y="490">One batched model prompt</text><text x="160" y="510">Structured findings or release risk</text>
+<rect x="30" y="560" width="260" height="60" rx="6"/>
+<text x="160" y="580">Go policy evaluation</text><text x="160" y="600">Approval minimums or risk floors</text>
+<rect x="30" y="650" width="260" height="60" rx="6"/>
+<text x="160" y="670">PR report and optional approval</text><text x="160" y="690">Or engineer report and channel draft</text>
+</g>
+</svg>
+</figure>
+
+<p>One binary exposes CLI commands and a durable worker. Shared storage is SQLite plus a content-addressed artifact directory.</p>
+<div class="table-responsive"><table class="table"><thead><tr><th>Component</th><th>Responsibility</th><th>Output</th></tr></thead><tbody>
+<tr><td>Context builder</td><td>Periodically build immutable repository context</td><td>Snapshot and dependency-index artifacts</td></tr>
+<tr><td>Merge ingester</td><td>Reconcile merged PRs and actual target-branch history</td><td>Per-merge records, transition journal, watermark</td></tr>
+<tr><td>Context assembler</td><td>Select source, context, and evidence before inference</td><td>Immutable prompt package and coverage manifest</td></tr>
+<tr><td>Batched reviewer</td><td>Make one model request</td><td>Findings, uncertainties, model merge-risk score</td></tr>
+<tr><td>Approval gate</td><td>Check programmatic minimums and live state</td><td>Eligibility decision and optional approval</td></tr>
+<tr><td>Release assembler</td><td>Resolve release range and combine journal/code/operations</td><td>Release prompt package and completeness ledger</td></tr>
+<tr><td>Batched release assessor</td><td>Make one model request</td><td>Release risk assessment and draft notes</td></tr>
+<tr><td>Report renderer</td><td>Render validated records deterministically</td><td>JSON, Markdown, and HTML reports</td></tr>
+</tbody></table></div>
+<p>Execution relationships:</p>
+<ol>
+<li>Schedule → build base snapshot.</li>
+<li>Each merge → journal actual integrated changes and invalidate affected context.</li>
+<li>PR event → assemble snapshot plus compatible journal plus exact diff and evidence → one model response → deterministic approval gate.</li>
+<li>Pre-release request → assemble release baseline, candidate, snapshot, journal, net diff, checks, and operational evidence → one model response → apply risk minimums and render release reports.</li>
+</ol>
+<p>Readers pin published artifacts. Builders and ingesters write new artifacts atomically; they do not mutate a context package used by a running review. The reviewer has no publishing credential. Only host publishing code can approve. Context-building and release-assessment components cannot approve PRs.</p>
+</details>
+<details><summary>4 Revision model and invariants</summary>
+<p>Capture repository/source-repository IDs, PR/MR identity, <code>head_oid</code>, <code>target_oid</code>, <code>merge_base_oid</code>, head tree, snapshot commit, journal cutoff, policy/instructions digests, and engine/prompt/model/schema versions. Treat object IDs as opaque validated IDs; do not assume a fixed hash length.</p>
+<p>Review the diff from merge base to HEAD. Before-images come from merge base; after-images and supplementary source come from HEAD. Record target separately. Fork source identity must be explicit. Under the initial approval policy, target must be an ancestor of HEAD; otherwise review can proceed but automatic approval is withheld. Synthetic merge/queue-tree review is deferred.</p>
+<p>Select a snapshot compatible with the reviewed tree. For an older branch, use an ancestral snapshot plus journal entries from its actual ancestry, not all entries from today&#x27;s target. Apply current PR changes as an ephemeral overlay to invalidate or replace stale summary claims before packing. Never append unmerged PR changes to the shared journal. If compatible context cannot be materialized, use bounded exact source context and mark the limitation.</p>
+<p>Invariants:</p>
+<ul>
+<li>Every source read is pinned to a repository and immutable revision.</li>
+<li>Model output cannot establish coverage, waive policy, or create approval authority.</li>
+<li>Input omissions, stale context, unavailable evidence, malformed/truncated output, and missing checks are explicit states.</li>
+<li>A successful response proves protocol completion, not semantic understanding of every supplied line.</li>
+<li>Shared journal entries describe merged target-branch state; review findings describe what a reviewer observed. Neither is a substitute for the other.</li>
+<li>HEAD, target, policy, or check changes invalidate affected eligibility decisions.</li>
+<li>Release risk and readiness are separate: low estimated risk does not imply complete evidence or readiness.</li>
+</ul>
+</details>
+<details><summary>5 Independent base context preparation</summary>
+<p>Build repository inventory, module map, Go declarations/import index, dependency metadata, bounded module summaries, and context-health metadata. Record each artifact&#x27;s source blobs, dependency blobs, generator version, prompt/model identity if generated, and configuration digest. Go syntax/import indexing uses the standard library initially; other languages use bounded text and manifest extraction. Do not claim a complete call graph.</p>
+<p>Snapshots contain an overview and references to selectable module artifacts. They are not necessarily included wholesale in every request. The assembler chooses relevant artifacts before inference. Summaries are derived claims; source is authoritative.</p>
+<p>Build on a configurable schedule and optionally on invalidation/size thresholds. Every merge still creates a journal record immediately; a merge may additionally request a background refresh. Full-repository summarization is never a prerequisite for each PR review. Background summaries use fixed bounded batches, without tool loops, and have budgets separate from online reviews.</p>
+<p>Write content by SHA-256 digest, verify it, then transactionally publish the snapshot and active pointer. A failed build leaves the previous snapshot intact. Coalesce redundant builds with durable leases. Compaction creates a new snapshot through an explicit target commit and links the journal entries it incorporates.</p>
+<p>Compaction does not erase release history. Retain journal records and source references needed by active runs, configured release baselines, and the audit retention window. Missing retained data must be visible to release assessment.</p>
+</details>
+<details><summary>6 Every merged PR enters the journal</summary>
+<h3>Ingestion trigger and identity</h3>
+<p>Consume authenticated merge events and periodically reconcile forge merge history and actual tracked-branch Git history. Webhooks alone are insufficient. Ingest merges even when the PR was unreviewed, manually approved, or merged while the service was unavailable. Review success is never an ingestion prerequisite.</p>
+<p>Uniquely identify a merge integration by provider, repository, target branch identity, PR/MR ID, and actual integrated commit/range. Duplicate events are idempotent. A later metadata enrichment is a new revision of that record, not a second application of the code change. The same PR cherry-picked onto another branch is a distinct integration with an explicit relationship if known.</p>
+<h3>Git truth and PR attribution</h3>
+<p>Separate the canonical target-branch transition ledger from PR attribution records. Walk actual branch history in ancestry order. Each integrated commit/change is accounted for once. For merge commits, use the first-parent transition to capture the integrated tree change, including conflict-resolution edits. For squash/rebase/fast-forward integration, resolve actual target commits/ranges through provider evidence and Git verification. Do not use the original PR diff as a substitute for what actually landed.</p>
+<p>Associate one or more canonical transitions with the merged PR record; do not apply both the PR patch and those transitions to context. Attribution ambiguity is recorded. If the code transition is verified but the PR mapping is uncertain, ingest it as an unattributed transition and reconcile attribution later. Direct pushes and unmapped commits must also enter the ledger so release coverage is complete.</p>
+<h3>Record shape and materialization</h3>
+<pre><code>MergeRecord:
+  repository_id, branch_id, change_id, integration_id
+  source_head_oid, integrated_commit_oids, transition_ids
+  merge_strategy, merged_at, attribution_status
+  review_run_ids, outstanding_finding_refs, metadata_version
+
+JournalTransition:
+  repository_id, branch_id, epoch, from_commit_oid, to_commit_oid
+  commit_oids, old_tree_oid, new_tree_oid, source_diff_digest
+  changed_paths_and_blobs, changed_symbols, affected_modules
+  invalidated_context_ids, replacement_context_ids
+  merge_record_refs, deterministic_change_flags
+  semantic_note_digest, enrichment_state, provenance</code></pre>
+<p>In one logical transition: verify ancestry; compute actual blob changes; update deterministic indexes; invalidate direct/dependent summaries; persist source evidence and change flags; atomically advance the contiguous ingestion watermark. Semantic enrichment is asynchronous. Its failure cannot lose the merge: keep the factual entry and <code>pending</code> or <code>failed</code> enrichment state. Replace stale summary claims with exact-source facts or omit them until regeneration succeeds.</p>
+<p>For an out-of-order event, reconcile intervening transitions first. Advance the watermark only over verified contiguous history. Keep separate code-ingestion and semantic-enrichment completeness. Force-reset/non-ancestral branch movement starts a new epoch and requires explicit reconciliation; never splice unrelated history into a continuous journal.</p>
+<p>Track migration files, public interface manifests, configuration, dependencies, infrastructure, generated artifacts, and reverts with deterministic selectors where possible. Semantic claims such as “backward compatible” need evidence or remain uncertain. Reverts preserve deployment implications: net-zero code can still require rollout notes if an intermediate version was deployed.</p>
+</details>
+<details><summary>7 Deterministic batched PR review</summary>
+<p>Before calling the model, host code:</p>
+<ol>
+<li>Captures revisions, trusted guidance, and policy.</li>
+<li>Fetches a complete changed-file/hunk manifest and exact diff.</li>
+<li>Matches mandatory review domains using trusted selectors.</li>
+<li>Selects compatible snapshot artifacts and materialized journal updates.</li>
+<li>Adds bounded enclosing functions, imports/interfaces, relevant tests, manifests, previous findings, and trusted CI facts using fixed retrieval rules.</li>
+<li>Deduplicates by source identity and fits per-layer/total budgets.</li>
+<li>Saves the exact serialized prompt, evidence IDs, coverage, exclusions, and omissions.</li>
+<li>Makes one structured model request with no tool schemas.</li>
+<li>Validates findings and anchors, saves usage/output, renders reports, and evaluates approval in Go.</li>
+</ol>
+<p>Source selection is deterministic and configured: changed symbols first; enclosing declarations; direct import/interface relationships; tests selected by supported naming/module rules; a bounded amount of matching documentation. Source readers have path, file-count, byte, index-depth, and time caps. Their output is context preparation, not model interaction.</p>
+<p>Prompt layout: trusted task and guidance; repository overview; relevant materialized context; change notes; complete packed PR diff; supplemental exact source/tests/checks; prior findings; host-generated coverage/limitations; JSON output contract. Stable prefix serialization may improve provider caching, but correctness cannot depend on a provider cache hit.</p>
+<p>The model returns findings, evidence references, unanswered questions, a review summary, and integer <code>model_merge_risk</code> with evidence-backed rationale. Go compares the effective score with the configured auto-approval threshold. It cannot invoke tools or initiate another call. A request for more information becomes an explicit limitation and human escalation.</p>
+<h3>Oversize input and retries</h3>
+<p>Do not silently convert an oversized PR into multiple model review calls. Remove redundant/optional context first. If a required diff/evidence item still does not fit, default to <code>input_incomplete</code> without inference and withhold approval. An explicit report-only partial mode may send one prompt, record every omitted hunk, and still prohibit approval. A later human-triggered rerun is a new run.</p>
+<p>Transient transport/rate-limit retries are bounded attempts of the same logical request, not a conversation. Persist attempts and usage; ambiguous provider completion can produce duplicate billing. Invalid/truncated JSON yields an incomplete run; do not start a model repair dialogue. Optional retry of the identical request must be explicitly configured and counted.</p>
+<p>Review current PRs in full for the MVP. Unchanged-input reuse is allowed. Changes to relevant code, trusted guidance, context, discussion, or model configuration change the reuse key. Previous findings are included within a separate budget; absence from a new output does not automatically resolve them without validated resolution evidence.</p>
+</details>
+<details open><summary>8 Merge risk and configurable auto approval</summary>
+<p>The single review response supplies an integer <code>model_merge_risk</code> from 1 through 10, with rationale and evidence. One means the lowest estimated merge risk and ten the highest. This is an ordinal assessment, not a probability of failure. The user configures the highest score eligible for auto-approval and the programmatic minimum scores triggered by repository facts. There is no separate model approve/deny vote.</p>
+<pre><code>enforced_minimum = max(
+    configured_base_minimum,
+    every_matching_path_minimum,
+    every_matching_change_size_minimum,
+    every_applicable_developer_familiarity_minimum
+)
+effective_merge_risk = max(model_merge_risk, enforced_minimum)
+
+eligible = approval_submission_enabled
+           AND valid_complete_review
+           AND effective_merge_risk &lt;= configured_auto_approve_max
+           AND all_required_checks_and_native_approval_requirements_pass
+           AND no_configured_blocking_finding_or_unresolved_required_evidence</code></pre>
+<p>The threshold is inclusive: with <code>auto_approve_max: 3</code>, scores 1, 2, and 3 are eligible. A valid score above the threshold means human review, not necessarily that the code must be rejected. All scores and floors are integers 1–10; do not average, sum, round, or clamp invalid model values into a valid score. Missing/malformed model risk means no effective score and no auto-approval, even if deterministic floors can be computed. Publish the known floors as a lower bound.</p>
+<p>Compute deterministic facts and floors before inference and include them in the one prompt. After inference, Go recomputes the effective score from trusted configuration and the saved facts. The model can assign a higher score but cannot lower a floor. <code>assess --run</code> re-evaluates thresholds/floors and live requirements without another model call when the saved review and model-rubric/input digests remain valid. A scoring-rubric or relevant evidence change requires a new one-prompt review; changing only an auto-approval threshold does not.</p>
+<h3>Path rules and wildcard semantics</h3>
+<p>Each rule has an ID, one or more repository-relative globs, a minimum risk, and optional explanation. Match against the complete changed-path manifest, including files omitted from model input. Additions, modifications, deletions, binary changes, and mode-only changes all count as touched. For renames, match both old and new paths; moving a file out of a sensitive directory cannot evade a rule. Copy records match source and destination where the diff establishes that relationship.</p>
+<p>Use a documented slash-based glob dialect: <code>*</code> matches within one segment, <code>?</code> matches one non-slash character, and <code>**</code> as a whole path segment matches zero or more segments. Match the whole repository-relative path, case-sensitively, including dot-prefixed paths. Normalize separators only; reject absolute paths and traversal. Reject unsupported glob syntax and invalid patterns at configuration load. No implicit negation or first-match-wins behavior. All matching rules apply and the highest floor wins. A file with no matching rule receives the configured base minimum.</p>
+<h3>Change size</h3>
+<p>Calculate size from the complete merge-base-to-HEAD diff before context filtering. Default changed lines are additions plus deletions, without whitespace normalization. A modified line generally counts once removed and once added. Pure content-identical renames/mode changes have zero changed lines but still count toward touched files. An actual rename counts as one changed-file record, with both paths available for matching. Binary files, submodules, and unreadable patches have unknown line counts; apply the configured unknown-size behavior rather than treating them as zero.</p>
+<p>Size rules select a named metric and inclusive lower bound, for example <code>changed_lines &gt;= 200</code> or <code>touched_files &gt;= 15</code>. Every satisfied rule contributes a floor. Optional trusted exclusions for generated/vendor paths must be explicit and visible in the metric breakdown; they do not remove path-rule matches or required review coverage. Unknown factor behavior is configurable as a specified minimum score or human-required. If a metric is only a lower bound, apply already-provable thresholds and the unknown behavior for thresholds not decidable from available facts.</p>
+<h3>Developer familiarity with affected code</h3>
+<p>Familiarity measures verified prior authored work in each configured code area, not general tenure, reputation, or whether the developer merely approved a review. An area has an ID and path globs. Match old/new changed paths using the same semantics as risk path rules. Evaluate every touched configured area independently; the least familiar applicable area can therefore impose the highest floor. Work elsewhere cannot dilute that floor. Unconfigured areas use the base minimum and are explicitly reported as unconfigured.</p>
+<p>Default metric: number of distinct earlier merged PR integrations authored by the current PR author that touched that area, within a configured lookback window and present in the captured target ancestry. Count each integration once per area. Exclude the current PR, open/unmerged work, mere approvals, and bot-authored changes unless trusted configuration explicitly includes them. Coauthorship and direct commits do not count by default; a future alternative metric must specify its identity and counting rules. Familiarity is a proxy for prior exposure, not proof of competence or correctness.</p>
+<p>Use verified provider account IDs and trusted alias mappings. Do not equate an unverified Git email/display name with the author. Resolve renamed historical paths using configured historical globs or verified rename mapping; uncertain mapping is incomplete history, not proven absence. Freeze the as-of time and target revision with the review. For example, zero prior merges in the past 180 days can impose 8, one or two can impose 6, three through nine can impose 4, and ten or more can use the base minimum.</p>
+<p>History must cover the requested lookback and tracked ancestry; on a new installation, backfill from the forge/Git before declaring a zero count. Missing permissions, incomplete indexing, unresolved identity, or uncertain area mapping is <code>unknown</code>. The user configures whether unknown familiarity imposes a floor or requires human review. Historical references, counts, evaluated area, window, and completeness are saved as evidence; the journal can maintain this materialized index, but it must distinguish pre-install history gaps from verified zero activity.</p>
+<h3>Example user policy</h3>
+<p>The numbers and areas below are illustrative defaults users can change. Nested approval/risk configuration is host-controlled and has its own digest. Rules combine through maximum floors, not additive penalties.</p>
+<pre><code>{
+  &quot;version&quot;: 1,
+  &quot;merge_risk&quot;: {
+    &quot;base_minimum&quot;: 1,
+    &quot;auto_approve_max&quot;: 3,
+    &quot;path_rules&quot;: [
+      {
+        &quot;id&quot;: &quot;authentication&quot;,
+        &quot;paths&quot;: [
+          &quot;internal/auth/**&quot;,
+          &quot;**/permissions/**&quot;
+        ],
+        &quot;minimum&quot;: 8
+      },
+      {
+        &quot;id&quot;: &quot;database-migrations&quot;,
+        &quot;paths&quot;: [
+          &quot;db/migrations/**&quot;,
+          &quot;**/*.sql&quot;
+        ],
+        &quot;minimum&quot;: 7
+      }
+    ],
+    &quot;change_size&quot;: {
+      &quot;unknown&quot;: {
+        &quot;action&quot;: &quot;minimum&quot;,
+        &quot;minimum&quot;: 8
+      },
+      &quot;rules&quot;: [
+        {
+          &quot;id&quot;: &quot;medium-diff&quot;,
+          &quot;metric&quot;: &quot;changed_lines&quot;,
+          &quot;at_least&quot;: 200,
+          &quot;minimum&quot;: 5
+        },
+        {
+          &quot;id&quot;: &quot;large-diff&quot;,
+          &quot;metric&quot;: &quot;changed_lines&quot;,
+          &quot;at_least&quot;: 800,
+          &quot;minimum&quot;: 8
+        },
+        {
+          &quot;id&quot;: &quot;many-files&quot;,
+          &quot;metric&quot;: &quot;touched_files&quot;,
+          &quot;at_least&quot;: 15,
+          &quot;minimum&quot;: 6
+        }
+      ]
+    },
+    &quot;developer_familiarity&quot;: {
+      &quot;metric&quot;: &quot;prior_authored_merged_integrations&quot;,
+      &quot;lookback_days&quot;: 180,
+      &quot;unknown&quot;: {
+        &quot;action&quot;: &quot;minimum&quot;,
+        &quot;minimum&quot;: 8
+      },
+      &quot;areas&quot;: [
+        {
+          &quot;id&quot;: &quot;billing&quot;,
+          &quot;paths&quot;: [
+            &quot;internal/billing/**&quot;,
+            &quot;web/billing/**&quot;
+          ]
+        },
+        {
+          &quot;id&quot;: &quot;authentication&quot;,
+          &quot;paths&quot;: [
+            &quot;internal/auth/**&quot;
+          ]
+        }
+      ],
+      &quot;tiers&quot;: [
+        {
+          &quot;at_most_prior_merges&quot;: 0,
+          &quot;minimum&quot;: 8
+        },
+        {
+          &quot;at_most_prior_merges&quot;: 2,
+          &quot;minimum&quot;: 6
+        },
+        {
+          &quot;at_most_prior_merges&quot;: 9,
+          &quot;minimum&quot;: 4
+        }
+      ],
+      &quot;otherwise_minimum&quot;: 1
+    }
+  }
+}</code></pre>
+<p>Familiarity tiers use the smallest inclusive <code>at_most_prior_merges</code> that contains the count; require strictly increasing nonnegative boundaries and nonincreasing minimum scores as counts grow. <code>otherwise_minimum</code> handles counts above the final tier. For an unknown factor, <code>action: human_required</code> is an alternative to <code>action: minimum</code>; reject ambiguous action/value combinations. Scores of ten are ordinary threshold values, not an undocumented “never approve” sentinel. Express unconditional human requirements separately and explicitly.</p>
+<h3>Examples and decision explanation</h3>
+<div class="table-responsive"><table class="table"><thead><tr><th>Situation with threshold 3</th><th>Model score</th><th>Triggered floors</th><th>Effective score</th><th>Outcome assuming other requirements pass</th></tr></thead><tbody>
+<tr><td>Small change outside configured areas</td><td>2</td><td>Base 1</td><td>2</td><td>Eligible</td></tr>
+<tr><td>Authentication file touched</td><td>2</td><td>Path 8, unfamiliarity 6</td><td>8</td><td>Human review</td></tr>
+<tr><td>240 changed lines</td><td>3</td><td>Size 5</td><td>5</td><td>Human review</td></tr>
+<tr><td>Developer has no prior billing merge</td><td>2</td><td>Familiarity 8</td><td>8</td><td>Human review</td></tr>
+<tr><td>Model identifies subtle interaction</td><td>7</td><td>Base 1</td><td>7</td><td>Human review</td></tr>
+</tbody></table></div>
+<p>Every report exposes model score/rationale, effective score, threshold, every matched rule/fact, unknown-factor policy, source/history timestamps, and any independent unmet requirement. Persist rule IDs, matched paths, metrics, and familiarity counts so the same decision can be reproduced. A display like “merge risk 8/10; minimum 8 from authentication path; auto-approval allowed through 3/10” explains the result without an extra model call.</p>
+<h3>Requirements independent of risk threshold</h3>
+<p>Retain revision validity, required CI results, trusted policy provenance, input completeness, and native branch protection requirements. An acceptable risk score cannot turn an invalid/truncated response, omitted required diff, or stale HEAD into a valid approval. Finding-severity blockers and human-only paths are explicit user policy/native requirements, not hidden score overrides. The model does not supply an additional approval veto: it expresses concerns through the score, findings, and evidence/uncertainty fields.</p>
+<p>Coverage is host-owned: each hunk is <code>included</code>, <code>excluded_by_trusted_policy</code>, <code>partially_included</code>, <code>unavailable</code>, or <code>not_included_budget</code>. A PR cannot alter its governing policy. Combine policy layers monotonically: highest floors, lowest allowed auto-approval threshold, and union required checks/human requirements. Validate the full effective policy before reviewing. A model risk score remains a judgment even though floor arithmetic is deterministic.</p>
+<p>Immediately before publication, refresh HEAD, target, checks, policy, and applicable author/history inputs. If a refreshed fact changes a model-relevant input, invalidate the review; if only the threshold or independent check state changed, re-evaluate without inference. Bind approval to the reviewed revision where supported, reconcile ambiguous writes, and prevent stale job generations from publishing. Native protections remain necessary where APIs cannot atomically bind every input. Approval never merges or bypasses branch protection.</p>
+</details>
+<details><summary>9 Pre-release assessment mode</summary>
+<h3>Scope and revision capture</h3>
+<p><code>release assess</code> takes an explicit prior-release baseline and release candidate, plus repository/branch identity and optional deployment environment. Resolve tags/branches once to immutable commit IDs and record the original names. Default requires baseline to be an ancestor of candidate. Non-ancestral/hotfix history needs an explicit supported comparison mode; the MVP returns an incomplete scope rather than guessing.</p>
+<p>An optional artifact/build ID must be tied to the candidate and trusted build provenance. Without it, assess source risk only; do not imply the deployable artifact was checked. If a candidate tag/ref moves, the old report remains historical and is stale for the new candidate. “Previous release” is an explicit configured release/deployment record, never simply the most recent Git tag by timestamp.</p>
+<h3>Release input package</h3>
+<p>Assemble compatible base context, verified journal materialization through the candidate, all integrations/direct commits in the release range, net baseline-to-candidate changes, affected-module/interface map, prior review findings with current applicability, candidate check/test/security results, and available operational evidence. Operational evidence includes migrations, dependency/configuration changes, deployment ordering, feature flags, compatibility constraints, rollback/runbook information, environment differences, and known incidents if explicitly supplied through configured sources.</p>
+<p>Journal entries since a snapshot and changes since the prior release are different ranges. Include entries necessary to reconstruct candidate context, but identify only release-range changes as new release content. A snapshot newer than the baseline cannot erase already compacted release-range history. Use commit membership, not merge timestamps or branch labels, to identify included changes. Exclude unreleased changes outside the candidate ancestry.</p>
+<p>Build an explicit completeness ledger for every release-range transition/PR, relevant risk category, source-change coverage, check source/revision, and missing operational field. Distinguish “verified absent,” “present,” and “unknown.” A missing migration/runbook note is not evidence that no migration or rollback concern exists.</p>
+<h3>One batched release prompt</h3>
+<p>Submit one prompt with release identity; architecture/context; complete release change inventory; bounded semantic notes and exact high-impact diffs; dependency and cross-change interactions; prior findings; trusted check/operational evidence; coverage/unknowns; output contract. Context selection is fixed before inference. There are no tools, follow-up turns, per-PR release model calls, or implicit summarization fan-out.</p>
+<p>For large releases, retain the complete factual inventory and deterministic risk flags, then add source and semantic detail in deterministic priority order. Record every omitted detail and its category. Required-detail overflow yields <code>insufficient_evidence</code>; do not infer low risk from unseen changes. A user may explicitly request a single-call limited report, but it must carry scope limitations and cannot declare full readiness. Optional journal enrichments already maintained in the background can be reused; the release command does not silently create many model jobs.</p>
+<h3>Risk and readiness</h3>
+<p>Return a model-estimated risk with rationale and evidence, then apply programmatic minimums. Use an ordered scale <code>low &lt; moderate &lt; high &lt; critical</code>. Trusted rules define category floors, required operational evidence, blockers, and required human signoffs. Examples: detected schema migration → at least moderate plus migration-plan evidence; explicit incompatible public API change → at least high plus compatibility/deployment-plan evidence; destructive migration with no verified recovery plan → high floor and blocked readiness. Exact rules remain configurable and their selectors must state what they can prove.</p>
+<pre><code>effective_risk = max(model_estimated_risk, all_triggered_rule_floors)
+readiness = blocked      if a deterministic blocking requirement fails
+            incomplete  if required evidence or source scope is unknown
+            needs_signoff if configured human signoff is outstanding
+            ready_for_engineer_review otherwise</code></pre>
+<p>If model output is missing/invalid, retain triggered risk floors as a lower bound, set overall assessment <code>insufficient_evidence</code>, and do not publish a definitive overall risk. An incomplete report can still identify known high-risk changes; it cannot present an unqualified low-risk rating. Readiness is advisory to a release engineer; it neither deploys nor creates approval authority.</p>
+<h3>Engineer report and release-channel draft</h3>
+<p>Produce a detailed engineer report and a short channel-ready draft from the same validated result. The engineer report includes candidate/baseline, assessed scope, effective risk and floors, readiness/blockers, interactions between changes, unresolved findings, required actions, migration/deployment order, feature flags, rollback/recovery concerns, recommended smoke tests/monitoring, explicit unknowns, evidence links, and usage/provenance.</p>
+<p>The channel draft includes release identity, notable changes, risk/readiness, actionable caveats, expected rollout/rollback considerations, and a reference to the full report. Separate change facts from suggested actions. Do not invent owners, deadlines, test results, customer impact, runbook steps, or a rollback command. Missing details become requests to the engineer. Render the concise draft deterministically from validated fields; no additional model rewrite call. Both outputs are drafts and are not sent to a channel by this command.</p>
+</details>
+<details><summary>10 Context and inference budgets</summary>
+<p>Set independent profiles for background context/enrichment, PR review, and release assessment. Example deployment ceiling of 272,000 tokens is configurable, not a model capability claim. Validate configured provider/model capabilities. Size the fully serialized request, including instructions, schemas, message overhead, expected completion/reasoning, and an uncertainty margin.</p>
+<div class="table-responsive"><table class="table"><thead><tr><th>Layer</th><th>PR example maximum</th><th>Release example maximum</th></tr></thead><tbody>
+<tr><td>Trusted instructions and policy</td><td>8,000</td><td>8,000</td></tr>
+<tr><td>Base context</td><td>40,000</td><td>40,000</td></tr>
+<tr><td>Journal and materialized change notes</td><td>16,000</td><td>64,000</td></tr>
+<tr><td>PR diff or release inventory/net changes</td><td>64,000</td><td>48,000</td></tr>
+<tr><td>Exact source, tests, CI and operational evidence</td><td>96,000</td><td>64,000</td></tr>
+<tr><td>Schema and serialization overhead</td><td>16,000</td><td>16,000</td></tr>
+<tr><td>Output/reasoning reserve and uncertainty margin</td><td>32,000</td><td>32,000</td></tr>
+<tr><td>Total</td><td>272,000</td><td>272,000</td></tr>
+</tbody></table></div>
+<p>These are ceilings, not targets. Do not fill unused space for its own sake. Preserve required input before optional summaries. Maintain byte/file/deadline limits for host gathering and token/attempt/cost limits for inference. Use exact tokenization where available; otherwise conservative estimation and an explicit margin. Record estimated and actual input/output/cached tokens.</p>
+<p>One logical inference per PR or release run; provider batch APIs for asynchronous throughput are an optional transport detail, not a multi-turn workflow. Stable prefixes can benefit provider prompt caches. Local context caching and provider caching remain separate. Never promise provider cache hits or savings before measurement. If pricing is unknown, enforce token/attempt caps and report monetary cost as unknown.</p>
+</details>
+<details><summary>11 Trust boundaries and failure handling</summary>
+<p>No model-callable tools or shell. Host readers use fixed Git argument arrays, validated revisions, path containment, <code>--</code> path separation, disabled hooks/external diff/textconv, and no submodule execution. Never execute repository code during assembly or indexing. Run required tests in existing trusted CI and consume verified results.</p>
+<p>Treat code, PR descriptions, comments, journal semantic notes, and attached runbooks as untrusted input. Keep trusted instructions/policy separate and label source provenance. Findings, recommendations, and release notes cannot execute actions. Do not expose secrets or approval credentials to prompts.</p>
+<p>All errors have explicit states. Missing journal ranges trigger catch-up before assembly; if catch-up cannot complete, mark scope incomplete. A provider outage, unreadable blob, stale summary, unsupported check capability, or malformed output cannot become a clean result. Preserve known findings and factual journal records on enrichment failure.</p>
+</details>
+<details><summary>12 Durable storage and identities</summary>
+<p>Use SQLite with migrations, foreign keys, WAL mode, bounded busy retries, and content-addressed artifacts. The database WAL and application change journal are different mechanisms. Publish artifacts atomically before referencing them. Retain source digests, request/response bodies, model usage, and configuration provenance under controlled access and retention settings.</p>
+<div class="table-responsive"><table class="table"><thead><tr><th>Record</th><th>Required identity and state</th></tr></thead><tbody>
+<tr><td>Repository and tracked branch</td><td>Provider IDs, branch epoch, ingestion/enrichment watermarks</td></tr>
+<tr><td>Snapshot and context artifact</td><td>Source commit/tree, dependency blobs, generator/config digests, health</td></tr>
+<tr><td>Merge record and attribution</td><td>PR integration identity, actual landed range, review refs, mapping status</td></tr>
+<tr><td>Journal transition</td><td>Verified from/to commits, factual changes, invalidations, enrichment versions</td></tr>
+<tr><td>Job</td><td>Idempotency key, lease, generation, attempts, queued/running/completed/failed state</td></tr>
+<tr><td>Prompt package</td><td>Serialized request digest, selected artifacts, source refs, coverage, omissions</td></tr>
+<tr><td>Review and inference attempt</td><td>Captured revisions, output/schema validity, usage, status</td></tr>
+<tr><td>Findings and observations</td><td>Stable fingerprints, anchors, evidence, resolution/dismissal provenance</td></tr>
+<tr><td>Developer history index</td><td>Verified author IDs, integration/path associations, lookback coverage and target ancestry</td></tr>
+<tr><td>Merge risk and eligibility</td><td>Model score/rubric, floor evidence, effective score, threshold, unknown states, policy digest</td></tr>
+<tr><td>Eligibility and publication</td><td>Policy/live observation digests, rule results, provider object IDs</td></tr>
+<tr><td>Release assessment</td><td>Baseline/candidate/build identity, journal range, completeness, risk/readiness</td></tr>
+<tr><td>Release report</td><td>Assessment ID, engineer report, channel draft, renderer version</td></tr>
+</tbody></table></div>
+<p>Reuse keys include all behaviorally relevant source revisions, context/evidence/discussion digests, trusted policy/instructions, prompt/schema/engine versions, and model parameters. Re-evaluate live approval checks without inference when the review remains reusable. Release evidence changes invalidate release report reuse even when source commits do not change.</p>
+<p>Persist request intent before external calls and responses/usage after receipt. Unknown completion after a crash is not exactly-once execution. Reconcile remote comments/approvals before retrying ambiguous writes. Finding identity must not depend on line number alone. Human dismissal requires verified authority and a recorded scope/rationale.</p>
+</details>
+<details><summary>13 Go packages and contracts</summary>
+<pre><code>cmd/reviewd
+internal/config        internal/domain       internal/storage
+internal/git           internal/contextbuild internal/contextpack
+internal/journal       internal/mergeingest  internal/model
+internal/budget        internal/review       internal/policy
+internal/release       internal/report       internal/publish
+internal/jobs          internal/telemetry
+internal/forge/github  internal/forge/gitlab
+migrations/            testdata/             docs/adr/</code></pre>
+<p>No <code>tools</code> package or agent executor is required. Keep source readers internal to assembly. Use the dependency and Bedrock requirements below when choosing the Go toolchain and module pins. Propagate <code>context.Context</code> and deadlines throughout.</p>
+<pre><code>type Model interface {
+    Complete(ctx context.Context, request BatchedRequest) (BatchedResponse, error)
+}
+
+type MergeIngester interface {
+    Reconcile(ctx context.Context, branch BranchRef, through ObjectID) (JournalWatermark, error)
+}
+
+type ContextAssembler interface {
+    ForReview(ctx context.Context, input ReviewInput, limits PackLimits) (PromptPackage, error)
+    ForRelease(ctx context.Context, input ReleaseInput, limits PackLimits) (PromptPackage, error)
+}
+
+type PolicyEvaluator interface {
+    Approval(ctx context.Context, input ApprovalInput) (EligibilityDecision, error)
+    Release(ctx context.Context, input ReleasePolicyInput) (ReleaseDecision, error)
+}
+
+type ReportRenderer interface {
+    Review(ctx context.Context, result ReviewResult) (RenderedReport, error)
+    Release(ctx context.Context, result ReleaseResult) (ReleaseReports, error)
+}</code></pre>
+<p>Support one structured-output model adapter and a deterministic fake initially. Normalize usage, stop/truncation reason, refusal, and errors. Do not accept tool calls from a provider response. Keep forge read, report, and approve capabilities separate. Optional future continuation mode requires a separate specification and explicit configuration; do not implement it implicitly.</p>
+<h3>Minimal third party dependencies</h3>
+<p>Use Go&#x27;s standard library first. <code>github.com/kzs0/bedrock</code> is the required service telemetry dependency. Pin a compatible release or exact commit after inspecting its current API and changelog. Do not substitute an unrelated library with the same name. The inspected root module declares Go 1.24 and no third-party module requirements; re-check the pinned revision and choose a supported Go toolchain compatible with it.</p>
+<p>Canonical configuration is strict JSON, using <code>encoding/json</code> with unknown-field rejection and explicit validation. Use <code>flag</code> for commands, <code>net/http</code> and <code>http.ServeMux</code> for clients/webhooks, <code>database/sql</code> for persistence, <code>os/exec</code> for constrained Git invocations, <code>go/parser</code> and <code>go/ast</code> for Go indexing, <code>html/template</code> for HTML, and <code>testing</code>/<code>httptest</code> for tests. Implement the small documented path-glob dialect locally and test it thoroughly. Do not add an agent framework, CLI framework, router, ORM, forge SDK, model SDK, YAML parser, or a parallel telemetry stack for the MVP. Use typed request/response structs and bounded standard-library HTTP clients for forge/model APIs.</p>
+<p>SQLite needs a database driver; select one maintained driver and document its transitive modules, license, and CGO/deployment tradeoff. A tokenizer is an additional dependency only if required for the selected provider&#x27;s reliable budget enforcement; justify it instead of assuming every model SDK/tokenizer is necessary. Prefer exact supported token counting or a documented conservative bound; do not claim an arbitrary heuristic guarantees a hard limit.</p>
+<p>Maintain <code>docs/dependencies.md</code> listing every direct dependency, why the standard library is insufficient, the pinned version, transitive footprint, and upgrade implications. Avoid a rigid dependency-count target that encourages reimplementing cryptography, database engines, or complex protocols. The intended initial direct dependencies are Bedrock and the SQLite driver, with any further dependency requiring a concrete written justification. This is an implementation discipline, not a reason to pause for repeated user approval.</p>
+<h3>Required Bedrock telemetry integration</h3>
+<p>Initialize Bedrock once in the CLI/service composition root and pass its <code>context.Context</code> through request handlers and worker jobs. Call the returned cleanup function during bounded graceful shutdown. <code>internal/telemetry</code> contains only application-specific setup, safe attribute helpers, and metric definitions; it must not become a second observability framework.</p>
+<p>Use Bedrock <code>Source</code> for worker lifetime, <code>Operation</code> for significant jobs, and <code>Step</code> for internal phases. Register actual errors explicitly because Bedrock operations otherwise succeed by default. Completing a policy evaluation that correctly requires human review is a successful operation with a non-approval decision, not an operational failure. Record malformed model responses, ingestion failures, and failed publication separately.</p>
+<pre><code>op, ctx := bedrock.Operation(ctx, &quot;review.run&quot;,
+    bedrock.Attrs(attr.String(&quot;provider&quot;, provider)),
+    bedrock.MetricLabels(&quot;provider&quot;),
+)
+defer op.Done()
+if err := runReview(ctx); err != nil {
+    op.Register(ctx, attr.Error(err))
+    return err
+}</code></pre>
+<p>The example uses <code>github.com/kzs0/bedrock</code> and <code>github.com/kzs0/bedrock/attr</code>; verify against the selected pin before implementation. Operation names are static: <code>context.build</code>, <code>journal.ingest</code>, <code>journal.reconcile</code>, <code>review.assemble</code>, <code>review.infer</code>, <code>review.run</code>, <code>merge_risk.evaluate</code>, <code>approval.publish</code>, <code>release.assemble</code>, <code>release.infer</code>, and <code>release.run</code>. Use explicit bounded labels such as provider, phase, outcome, and configured reason code. Run IDs, commit IDs, developer IDs, arbitrary paths, and raw model names/URLs are not metric labels. Put necessary correlation IDs in controlled log/trace attributes instead.</p>
+<p>Collect preparation/inference durations, token/cache usage, snapshot health, ingestion lag, journal gaps, familiarity-history coverage, model/enforced/effective risk distributions, threshold decisions, release readiness, retries, and publication outcomes. Use Bedrock&#x27;s existing metrics/logging/tracing facilities rather than importing a second metrics, logging, or tracing SDK. Avoid duplicate counting from both HTTP middleware and nested operations with the same semantic name.</p>
+<p>Use <code>bedrock.HTTPMiddleware</code> and <code>bedrock.NewClient</code> where their recorded attributes are appropriate. Keep request timeouts and context cancellation on outbound requests. Bedrock&#x27;s HTTP client instrumentation records URL-related attributes; normalize/redact sensitive paths and queries before export, or use a narrow manually instrumented HTTP call when that cannot be guaranteed. Never put credentials, repository content, prompts, full responses, or authorization headers in telemetry.</p>
+<p>Service mode may enable Bedrock&#x27;s metrics/health server on a configured loopback or controlled address; profiling is opt-in. Set server enablement/address/profile settings explicitly rather than relying on ambient defaults. One-shot CLI commands and tests disable listeners unless requested. Managed cloud export is opt-in with explicit destination/credentials; the requirement to use Bedrock does not authorize sending telemetry to an external account. Exporter failures must not alter risk scores, lose journal records, or turn an approval denial into approval. Durable audit records remain in application storage, independent of telemetry delivery.</p>
+<p>Acceptance tests verify expected operation names and outcomes, error registration, low-cardinality label policy, shutdown, listener-free CLI/tests, and the absence of sensitive prompt/credential fields. Keep these tests offline using supported local Bedrock facilities and standard-library HTTP test servers.</p>
+</details>
+<details><summary>14 Structured output contracts</summary>
+<p>Use versioned JSON schemas with strict enums and source/evidence validation. The model produces judgments and references; the host adds canonical IDs, coverage, eligibility, risk floors, and publication state. Unknown authorization fields cannot affect decisions.</p>
+<p>Review model response:</p>
+<pre><code>{
+  &quot;schema_version&quot;: 1,
+  &quot;summary&quot;: &quot;Concise review summary&quot;,
+  &quot;findings&quot;: [],
+  &quot;unresolved_questions&quot;: [],
+  &quot;model_merge_risk&quot;: 4,
+  &quot;merge_risk_rationale&quot;: &quot;Evidence-backed merge-risk rationale&quot;,
+  &quot;merge_risk_evidence_ids&quot;: [],
+  &quot;limitations&quot;: []
+}</code></pre>
+<p>Each finding has severity, category, title, concrete trigger/consequence, source anchor where valid, and evidence IDs. Allow non-inline findings when no changed-line anchor exists. Validate references against the immutable prompt package. The host saves exact response and coverage alongside the structured record. Validate <code>model_merge_risk</code> as a JSON integer in [1, 10], not a numeric string, float, or boolean. Host output adds enforced minimum, effective merge risk, auto-approval threshold, matched rules, size/familiarity evidence, and independent unmet requirements. Release risk retains its separate categorical scale; do not average PR merge-risk scores into a release-risk score.</p>
+<p>Release model response:</p>
+<pre><code>{
+  &quot;schema_version&quot;: 1,
+  &quot;model_estimated_risk&quot;: &quot;moderate&quot;,
+  &quot;risk_rationale&quot;: &quot;Evidence-backed explanation&quot;,
+  &quot;risk_items&quot;: [],
+  &quot;cross_change_interactions&quot;: [],
+  &quot;notable_changes&quot;: [],
+  &quot;required_actions&quot;: [],
+  &quot;migration_and_rollout_notes&quot;: [],
+  &quot;rollback_and_recovery_notes&quot;: [],
+  &quot;smoke_test_and_monitoring_suggestions&quot;: [],
+  &quot;unresolved_questions&quot;: [],
+  &quot;evidence_ids&quot;: [],
+  &quot;limitations&quot;: []
+}</code></pre>
+<p>List items carry evidence IDs and explicit factual/suggested/unknown classification where applicable. Host output adds <code>assessment_status</code>, <code>effective_risk</code> or null, triggered floors, readiness, blockers/signoffs, completeness ledger, baseline/candidate/build IDs, evidence freshness, and report timestamps. The renderer cannot remove mandatory caveats from the channel draft.</p>
+</details>
+<details><summary>15 Configuration and CLI</summary>
+<p>Reject unknown keys and impossible budgets. Host-controlled configuration owns policy and secrets. Configuration examples use JSON so the MVP needs no YAML parser. The example budget profile refers to the numeric allocations in Section 10; implement a schema for its explicit fields.</p>
+<pre><code>{
+  &quot;version&quot;: 3,
+  &quot;context&quot;: {
+    &quot;rebuild_interval&quot;: &quot;24h&quot;,
+    &quot;compact_after_entries&quot;: 200,
+    &quot;stale_artifacts&quot;: &quot;exclude&quot;
+  },
+  &quot;journal&quot;: {
+    &quot;ingest_every_merge&quot;: true,
+    &quot;reconciliation_interval&quot;: &quot;5m&quot;,
+    &quot;include_direct_pushes&quot;: true,
+    &quot;semantic_enrichment&quot;: &quot;asynchronous&quot;
+  },
+  &quot;review&quot;: {
+    &quot;execution&quot;: &quot;single_prompt&quot;,
+    &quot;include_merge_risk&quot;: true,
+    &quot;oversize_policy&quot;: &quot;require_human&quot;
+  },
+  &quot;inference&quot;: {
+    &quot;max_logical_requests_per_run&quot;: 1,
+    &quot;max_transport_attempts&quot;: 2,
+    &quot;retry_invalid_output&quot;: false
+  },
+  &quot;budgets&quot;: {
+    &quot;review_profile&quot;: &quot;review_272k&quot;,
+    &quot;release_profile&quot;: &quot;release_272k&quot;,
+    &quot;context_build_profile&quot;: &quot;background_bounded&quot;
+  },
+  &quot;approval&quot;: {
+    &quot;mode&quot;: &quot;shadow&quot;,
+    &quot;policy_file&quot;: &quot;./policy.json&quot;,
+    &quot;merge_risk_policy_file&quot;: &quot;./merge-risk.json&quot;,
+    &quot;require_complete_coverage&quot;: true,
+    &quot;require_target_in_head&quot;: true
+  },
+  &quot;release&quot;: {
+    &quot;policy_file&quot;: &quot;./release-policy.json&quot;,
+    &quot;require_complete_journal&quot;: true,
+    &quot;require_complete_required_evidence&quot;: true,
+    &quot;output_channel_draft&quot;: true,
+    &quot;post_to_channel&quot;: false
+  }
+}</code></pre>
+<p><code>ingest_every_merge</code> and <code>include_direct_pushes</code> are invariant-valued keys for this version: false is rejected rather than silently violating complete history. Structured budget profiles include layer ceilings, total context/output reserve, request byte caps, deadlines, and attempt/token/cost limits. Missing model capability metadata must be supplied explicitly.</p>
+<pre><code>reviewd context build --repo &lt;id-or-path&gt; --ref &lt;commit&gt;
+reviewd journal reconcile --repo &lt;id&gt; --branch &lt;branch&gt; --through &lt;commit&gt;
+reviewd review --url &lt;pr-or-mr-url&gt;
+reviewd review --repo &lt;path&gt; --base &lt;commit&gt; --head &lt;commit&gt;
+reviewd assess --run &lt;review-id&gt;
+reviewd publish --run &lt;review-id&gt;
+reviewd release assess --repo &lt;id-or-path&gt; --baseline &lt;ref&gt; --candidate &lt;ref&gt;
+reviewd release render --assessment &lt;id&gt; --format html
+reviewd explain --run &lt;id&gt;
+reviewd serve --config &lt;path&gt;
+reviewd evaluate --fixtures &lt;path&gt;</code></pre>
+<p><code>assess</code> makes zero model calls. <code>release assess</code> makes at most one logical release model request; <code>release render</code> makes zero. Produce JSON plus readable local output. Reports are artifacts, not sent messages. Exit codes: 0 completed command, 1 operational error, 2 invalid input/config, 3 configured findings/blockers threshold, 4 incomplete input/assessment. Readiness and approval eligibility also have explicit JSON fields.</p>
+</details>
+<details><summary>16 Workers and provider adapters</summary>
+<p>Persist authenticated event receipt before acknowledging; deduplicate delivery and logical integration identities. Use leases, heartbeats, bounded retries, and per-change generation counters. New PR revisions supersede old review jobs. Merge ingestion is independent and must not be canceled because a review was superseded or failed.</p>
+<p>Use separate tracked-branch serialization for contiguous ingestion. Periodic catch-up discovers merges missed during outages, checks direct commits, and reconciles PR attribution. Candidate/review assembly waits for the required journal watermark or explicitly reports gaps. An ancestry mismatch starts a reconciliation workflow rather than advancing a cursor incorrectly.</p>
+<p>Forge adapters normalize immutable repository/change identities, pagination, actual merge strategy/range, check producer/revision/conclusion, human approvals, comments, and revision-bound approvals. A check display name alone is insufficient proof; map trusted producer identity and protected CI provenance. Unsupported capabilities produce unknown.</p>
+<p>Publish owned comments idempotently with a stable marker and remote ID. Never edit human comments. Revalidate before approval and reconcile ambiguous responses. Source-only release assessment must not imply artifact or environment validation. No release channel connection or recipient lookup is required until outbound posting is explicitly requested.</p>
+</details>
+<details><summary>17 Validation and evaluation</summary>
+<p>Tests must verify invariants with local Git fixtures, a counting fake model, and recorded/sanitized forge API fixtures. No paid credentials are required for default tests.</p>
+<div class="table-responsive"><table class="table"><thead><tr><th>Scenario</th><th>Acceptance result</th></tr></thead><tbody>
+<tr><td>Normal PR review</td><td>Exactly one model completion; zero tool definitions/calls</td></tr>
+<tr><td>Threshold boundary score equals configured maximum</td><td>Eligible if other configured requirements pass</td></tr>
+<tr><td>Overlapping wildcard path rules and rename out of sensitive area</td><td>Highest matching floor applies using both paths</td></tr>
+<tr><td>Size exceeds multiple inclusive thresholds</td><td>Highest satisfied floor applies from full diff before filtering</td></tr>
+<tr><td>Unknown binary line count or missing author history</td><td>Apply configured minimum or human-required behavior</td></tr>
+<tr><td>Familiar author touches an unfamiliar second area</td><td>Evaluate each area; worst applicable floor wins</td></tr>
+<tr><td>New installation lacks lookback history</td><td>Unknown until backfill; not verified zero</td></tr>
+<tr><td>Duplicate merged PR or current unmerged PR</td><td>Does not inflate prior authored integration counts</td></tr>
+<tr><td>Model emits 0, 11, string, float, or missing risk</td><td>Invalid assessment; no auto-approval</td></tr>
+<tr><td>Auto-approval threshold changes alone</td><td>Re-evaluate stored risk without another model call</td></tr>
+<tr><td>Approval re-evaluation and report rendering</td><td>Zero additional model calls</td></tr>
+<tr><td>Required PR diff exceeds budget</td><td>Explicit incomplete input; no hidden chunk fan-out or approval</td></tr>
+<tr><td>Model requests more source or emits tool calls</td><td>Human-required/invalid response; no tool execution</td></tr>
+<tr><td>Snapshot contains unrelated later target changes</td><td>Incompatible facts excluded</td></tr>
+<tr><td>Shared helper changes after snapshot</td><td>Dependent summaries invalidated or regenerated</td></tr>
+<tr><td>PR merged without a prior review</td><td>Merge recorded and target context advanced</td></tr>
+<tr><td>Duplicate/out-of-order/missing merge events</td><td>One integration record; contiguous reconciliation</td></tr>
+<tr><td>Squash, merge commit conflict edits, rebase merge</td><td>Actual landed changes recorded once</td></tr>
+<tr><td>Direct push or unattributed commit</td><td>Included in ledger and release coverage</td></tr>
+<tr><td>Semantic enrichment fails</td><td>Factual merge persists; completeness indicates missing semantics</td></tr>
+<tr><td>Branch force reset</td><td>New epoch; no false continuity</td></tr>
+<tr><td>Baseline predates snapshot compaction</td><td>Full release history remains available or gap reported</td></tr>
+<tr><td>Candidate omits some target merges</td><td>Only candidate-ancestry changes included</td></tr>
+<tr><td>Release changes revert earlier commits</td><td>Net code and relevant deployed-history implications distinguished</td></tr>
+<tr><td>Missing release check/runbook/required diff</td><td>Readiness incomplete or blocked; no unqualified low-risk report</td></tr>
+<tr><td>Model rates low but release rule requires high</td><td>Effective release risk at least high</td></tr>
+<tr><td>Candidate tag moves or check artifact SHA differs</td><td>Report stale or required evidence unknown</td></tr>
+<tr><td>Channel draft rendered</td><td>Includes mandatory risk/readiness/unknowns; nothing sent</td></tr>
+<tr><td>Policy injection, wrong check producer, stale HEAD</td><td>Approval refused regardless of model output</td></tr>
+</tbody></table></div>
+<p>Evaluate fresh source-only packs versus snapshot/journal packs on the same changes/model/settings. Compare finding precision/recall after adjudication, scope coverage, stale-context errors, latency, cached/uncached usage, and actual cost including amortized journal enrichment and snapshot builds. Evaluate release assessments against historical release incidents and engineer annotations where available; avoid claiming that a risk score is a calibrated incident probability.</p>
+<p>Measure one-call latency rather than claiming Go makes inference fast. Warm review preparation should avoid whole-repository summarization and reuse unchanged artifacts. Establish performance targets from fixtures and model measurements. Log merge-ingestion lag, contiguous watermark, enrichment backlog, context health, request/response tokens, incomplete scopes, rule floors, and withholding reasons without logging secrets/raw code by default.</p>
+</details>
+<details><summary>18 Implementation phases and agent handoff</summary>
+<h3>Phase 1 One prompt local review</h3>
+<p>Implement Go domain types, strict JSON config validation, Bedrock initialization and operation instrumentation, SQLite/artifacts, exact Git diff/source gathering, deterministic packing/coverage, a counting fake model, one structured-output adapter, and JSON/Markdown reporting. Include the model merge-risk score in the one review response and compute path, size, and familiarity floors in Go. Add deterministic <code>assess</code> without inference.</p>
+<p>Acceptance: dependency inventory is present, Bedrock telemetry is exercised without external services or listener leakage, and offline fixtures demonstrate exactly one model completion, zero tools, and zero model calls for approval re-evaluation. A triggered floor overrides a lower model score; threshold eligibility does not bypass a required integrity/check failure. Oversized input cannot silently trigger multiple reviews. Ship a runnable example, not only interfaces.</p>
+<h3>Phase 2 Snapshots and merge journal</h3>
+<p>Implement immutable snapshots, Go indexes, bounded background summaries, canonical branch transitions, per-merge attribution, watermark reconciliation, invalidation, and compaction with retained release history.</p>
+<p>Acceptance: every merged PR is ingested regardless of review state; missed/duplicate/squash/rebase events are handled; exact landed changes are counted once; unchanged context is shared across distinct reviews; enrichment failure does not lose merges.</p>
+<h3>Phase 3 Pre-release vertical slice</h3>
+<p>Implement immutable baseline/candidate capture, release inventory/materialization, completeness ledger, operational evidence adapters, one release prompt, risk floors/readiness rules, and engineer/channel-draft renderers.</p>
+<p>Acceptance: one release request includes selected base context and journal plus release evidence, produces an actionable report, never silently ignores history gaps, and does not send a message. Lower model risk cannot override deterministic minimums. Rendering needs no second inference.</p>
+<h3>Phase 4 GitHub worker and shadow deployment</h3>
+<p>Implement authenticated events, durable jobs, reconciliation schedules, review comments, trusted checks, and protection diagnostics. Keep actual approval disabled. Exercise merge ingestion and pre-release jobs during provider outages and concurrent updates.</p>
+<h3>Phase 5 GitLab and approval submission</h3>
+<p>Add GitLab parity, live policy/check revalidation, revision-bound approval publication, ambiguity reconciliation, and stale-generation controls. Submit mode requires trusted configuration and supported native protections. No auto-merge/deploy/channel posting.</p>
+<h3>Phase 6 Evaluation and release packaging</h3>
+<p>Add historical replay, measured performance/quality reports, backup/restore, retention, operational documentation, and release artifacts. Protect scope: no agent loop, hidden chunk model calls, or dashboard unless separately requested.</p>
+<h3>Instructions to the implementing agent</h3>
+<ol>
+<li>Inspect the repository and applicable instructions; initialize a Go module only if needed.</li>
+<li>Treat this v3 specification as authoritative over earlier approval-vote and exploration/continuation designs.</li>
+<li>Build Phase 1 end to end and expose a fake-model call counter in tests.</li>
+<li>Keep source gathering deterministic and separate from inference; no tool schemas or tool execution. Use the standard library first and the required <code>github.com/kzs0/bedrock</code> telemetry integration; record justified extra dependencies.</li>
+<li>Journal actual integrated changes after every merge, including unreviewed merges, and catch up gaps from Git/forge evidence.</li>
+<li>Implement pre-release mode as a first-class command and durable record, not a prose-only TODO.</li>
+<li>Use conservative incomplete/unknown states when provider data cannot establish a required fact.</li>
+<li>Deliver runnable commands, examples, passing tests, and a clear list of completed behavior and limitations. Do not report placeholder checks as success.</li>
+</ol>
+</details>
+<details><summary>19 Deferred decisions</summary>
+<p>Incremental partial-PR coverage reuse; embeddings; cross-repository context; synthetic merge/queue review; sandboxed test execution; multi-host storage; optional independent model assessments; dashboard; and explicitly authorized outbound channel posting.</p>
+<p>These are not prerequisites for the central design: maintain reusable context separately, account for every merged change, assemble one review prompt, enforce approval in Go, and assemble one release-risk prompt from a complete declared scope.</p>
+</details>
+<details><summary>20 References and provenance</summary>
+<p>This document defines proposed behavior rather than claiming current upstream compatibility. Verify current source and license obligations before copying code or prompts.</p>
+<ul>
+<li>Required Bedrock telemetry library and inspected API: <a href="https://github.com/kzs0/bedrock" target="_blank" rel="noopener noreferrer">https://github.com/kzs0/bedrock</a></li>
+<li>Bedrock initialization and operation API: <a href="https://github.com/kzs0/bedrock/blob/main/api.go" target="_blank" rel="noopener noreferrer">https://github.com/kzs0/bedrock/blob/main/api.go</a></li>
+<li>Bedrock configuration: <a href="https://github.com/kzs0/bedrock/blob/main/config.go" target="_blank" rel="noopener noreferrer">https://github.com/kzs0/bedrock/blob/main/config.go</a></li>
+<li>PR-Agent: <a href="https://github.com/The-PR-Agent/pr-agent" target="_blank" rel="noopener noreferrer">https://github.com/The-PR-Agent/pr-agent</a></li>
+<li>PR-Agent review: <a href="https://docs.pr-agent.ai/tools/review/" target="_blank" rel="noopener noreferrer">https://docs.pr-agent.ai/tools/review/</a></li>
+<li>PR-Agent context compression: <a href="https://docs.pr-agent.ai/core-abilities/compression_strategy/" target="_blank" rel="noopener noreferrer">https://docs.pr-agent.ai/core-abilities/compression_strategy/</a></li>
+<li>PR-Agent configuration: <a href="https://docs.pr-agent.ai/usage-guide/configuration_reference/" target="_blank" rel="noopener noreferrer">https://docs.pr-agent.ai/usage-guide/configuration_reference/</a></li>
+</ul>
+<p>Revision 2 incorporated the maintainer&#x27;s requirements for a single batched PR prompt, incorporation of every merged PR into the journal, and pre-release risk/engineer/channel-draft output. Revision 3 adds a 1–10 merge-risk estimate in that same response, user-controlled auto-approval thresholds, and configurable path, size, and developer-familiarity minimums.</p>
+<p>Revision 3 makes merge risk an integer from 1 to 10. The user chooses the inclusive auto-approval threshold; deterministic configurable minimums cover touched path globs, change size, and prior developer work in each affected area.</p>
+<p>Revision 3 also requires minimal third-party dependencies and <code>github.com/kzs0/bedrock</code> for service telemetry. Configuration examples use strict JSON; additional runtime dependencies need a written justification.</p>
+</details>
+</div>

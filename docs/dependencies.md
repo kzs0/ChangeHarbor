@@ -1,0 +1,12 @@
+# Dependency inventory
+
+Go toolchain: module minimum Go 1.24; development Go 1.26.0. Both dependencies are pinned in go.mod/go.sum. Standard-library JSON, flags, HTTP, templates, Git process invocation, indexing, hashing, and testing avoid SDK/framework dependencies.
+
+| Direct module | Pin | License | Justification / footprint | Upgrade implications |
+| --- | --- | --- | --- | --- |
+| github.com/kzs0/bedrock | v0.5.0 | MIT | Required telemetry integration. Standard library alone does not supply the specified operation/step/source lifecycle. Root module has no third-party module requirements. Inspected api.go, config.go, operation.go and module metadata at this pin. | Requires Go >=1.24. Recheck operation outcome semantics and explicit disabled server/export defaults. Retain license when distributing copied dependencies. |
+| github.com/mattn/go-sqlite3 | v1.14.32 | MIT (driver); bundled SQLite public domain | database/sql has no SQLite driver. No third-party Go module requirements. Bundled SQLite C source uses CGO and the system C compiler; gcc is available here. | CGO_ENABLED=1 and a C toolchain required; cross compilation needs a target C compiler. Recheck bundled SQLite security updates, migration compatibility, WAL/foreign-key behavior and backup/restore. CGO-disabled builds cannot operate storage and must fail explicitly. |
+
+Pins resolved through Go module proxy; go.sum records integrity checksums. Default tests use fake models, local Git and httptest without paid credentials or external telemetry. The Bedrock dependency is service telemetry, unrelated to Amazon Bedrock model inference. Exporting telemetry is opt-in and never implied by dependency installation.
+
+Development cache paths are writable workspace paths: GOPATH=/workspace/.cache/go and GOCACHE=/workspace/.cache/go-build. Network access is needed only to provision toolchain/dependencies; ordinary acceptance tests should run offline once cached.

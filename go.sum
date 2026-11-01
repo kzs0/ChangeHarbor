@@ -1,0 +1,4 @@
+github.com/kzs0/bedrock v0.5.0 h1:iHmWvfz70LGnCTCGZtAA9/r1LWcVkbt6IJ9vSj1JqAQ=
+github.com/kzs0/bedrock v0.5.0/go.mod h1:p+nakhGSyp6w6U+7r1SACHLGc4QbNxX8XLqcoxPH5qQ=
+github.com/mattn/go-sqlite3 v1.14.32 h1:JD12Ag3oLy1zQA+BNn74xRgaBbdhbNIDYvQUEuuErjs=
+github.com/mattn/go-sqlite3 v1.14.32/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
