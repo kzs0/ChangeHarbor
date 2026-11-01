@@ -48,7 +48,7 @@ func TestCLILocalGitShadow(t *testing.T) {
 	old := os.Stdout
 	os.Stdout = f
 	defer func() { os.Stdout = old }()
-	code := run(context.Background(), []string{"review", "--repo", repo, "--base", "base", "--head", "HEAD", "--response", "../../testdata/review-response.json"})
+	code := run(context.Background(), []string{"review", "--repo", repo, "--base", "base", "--head", "HEAD", "--response", "../../testdata/review-response.json", "--state", t.TempDir()})
 	f.Close()
 	os.Stdout = old
 	if code != 0 {
