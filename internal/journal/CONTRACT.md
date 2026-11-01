@@ -1,0 +1,5 @@
+# Journal contract
+Use durable `storage.Store`, no forge/Git dependency. `Open(ctx,*storage.Store) (*Ledger,error)` loads persisted state. Types: `Transition {ID, Repository, Branch, From, To, DiffDigest string; Epoch int; Paths []string}`; `Watermark {Commit string; Epoch int}`.
+`Append(ctx,Transition) error`: first transition establishes branch's start; thereafter exact contiguity required. Same transition ID with identical payload is idempotent, conflicting payload fails. Distinct duplicate To transition cannot double apply; errors conservatively. Empty identities/from/to/diff reject. Persist before returning.
+`Watermark(ctx,repo,branch) (Watermark,error)`; `Entries(ctx,repo,branch) ([]Transition,error)` ordered including retained old epochs. `Reset(ctx,repo,branch,commit string) error` explicitly increments epoch and sets cursor, retains old transitions; implicit discontinuity never resets automatically. First epoch is 0. Scope dedup by repo+branch+epoch.
+No semantic enrichment required for factual append; no review prerequisite. API consumes verified transitions, not provider patches. Reconciliation and ancestry verification are separate boundary.
