@@ -52,3 +52,9 @@ Compatibility: saved offline release fixtures may use legacy string lists, marke
 in their reports. New live release calls require evidence-classified object lists.
 Provider capability/pricing metadata is explicit operator configuration. Unknown
 usage/price is reported as unknown; cost figures are estimates at configured rates.
+
+Final checks: 22 packages pass race tests; vet, build, real local Git workflow,
+release rendering and backup/restore smoke pass. CI reproduces local validation.
+Background summaries and provider-evidence attribution/backfill are bounded,
+audited components; a host-verified MergeSource adapter is required for each
+installation's historical provider data. Missing provider coverage stays unknown.

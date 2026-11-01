@@ -2,3 +2,4 @@
 .reviewd/
 *.db*
 /dist/
+.cache/

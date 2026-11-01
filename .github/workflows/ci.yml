@@ -1,0 +1,25 @@
+name: Go validation
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: go-validation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Validate and build
+        env:
+          CGO_ENABLED: '1'
+        run: make check build GO=go
+      - name: Replay offline invariants
+        run: ./bin/reviewd evaluate --fixtures testdata/evaluation.json

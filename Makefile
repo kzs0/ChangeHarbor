@@ -1,7 +1,6 @@
-export GOCACHE := /workspace/.cache/go-build
-export GOPATH := /workspace/.cache/go
-GO := /workspace/toolchains/go/bin/go
-.PHONY: test check build
+GO := $(if $(wildcard /workspace/toolchains/go/bin/go),/workspace/toolchains/go/bin/go,go)
+export GOCACHE ?= $(CURDIR)/.cache/go-build
+.PHONY: test check build package
 test:
 	$(GO) test ./...
 check:
@@ -9,3 +8,5 @@ check:
 	$(GO) test -race ./...
 build:
 	$(GO) build -o bin/reviewd ./cmd/reviewd
+package:
+	GO=$(GO) scripts/package.sh

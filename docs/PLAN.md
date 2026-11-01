@@ -35,3 +35,11 @@ without overwriting it. Validated components are committed and pushed as each
 ownership group settles. Round 2 adds live transport, indexing/history, durable
 workers/forge adapters, classified evidence, complete CLI paths, replay and backup.
 See STATUS.md and validation-round2-*.md for evidence and operational boundaries.
+
+Final continuation validation: all 22 packages pass `go test -race ./...`;
+`go vet ./...` and binary build pass. End-to-end local Git smoke completed context
+build, journal reconciliation, review, inference-free reassessment, evaluation,
+release assessment, HTML/draft rendering, backup and restore. Host release archive
+and checksum built. GitHub Actions now repeats vet/race/build and offline replay.
+No paid inference or remote review/comment/approval was executed. GitHub pushes
+contain code checkpoints authorized by the maintainer.
