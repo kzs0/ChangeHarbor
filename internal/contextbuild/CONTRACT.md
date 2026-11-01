@@ -21,3 +21,28 @@ Complete,Limitations}. It selects candidate-ancestral context, excludes invalida
 summaries, includes bounded exact changed source overlays, and requires contiguous
 journal materialization from selected snapshot to candidate. Outside-ancestry rows
 are excluded. Unavailable journal/source context is explicit incomplete state.
+
+## Background enrichment and scheduling
+
+`Summarize(ctx,store,model.Model,SummaryOptions{Snapshot,ModelID,GeneratorVersion,
+ConfigDigest,Limits}) (SummaryBuild,error)` plans fixed ID-sorted batches before
+inference. Limits explicitly contain MaxInputBytes, MaxOutputBytes, MaxBatchFiles,
+MaxBatches, aggregate MaxTokens, per-response MaxOutputTokens, conservative
+InputTokensPerByte, Deadline, optional MaxCostMicros and explicit pricing.
+Reservations cover the full allowed input-byte envelope plus output reserve for
+every batch. HTTP adapters are copied with separate limits, single-attempt
+transport, unique durable batch IDs and storage audit, preserving online settings.
+
+Request intents and responses/usage are durable. Completed identical builds reuse
+results. Failed/in-progress/ambiguous immutable jobs require explicit reconciliation
+or a new authorized identity; there is no automatic repair dialogue. All returned
+evidence IDs must match supplied batch files. Summary claims remain derived data.
+`PublishSummaries(ctx,store,base,result)` checks the durable result and creates a
+new immutable snapshot, retaining the factual base and history on all failures.
+
+`SummaryScheduler{Store}.Tick(ctx,now,ScheduleOptions{ID,Worker,Interval,Lease},run)`
+is a durable injected-clock scheduling step. It coalesces concurrent runs, stores
+interval/lease/generation, bounds the callback lifetime and records failures without
+a tight retry loop. Expired unknown-running jobs refuse replay pending reconciliation.
+The service composition owns the periodic loop and supplies a separately configured
+background model; no review or release request invokes this scheduler implicitly.

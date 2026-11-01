@@ -11,6 +11,10 @@ and dependent summaries, attaches exact pinned changed-file source overlays, and
 checks contiguous journal transitions to the candidate. Missing context remains
 explicitly incomplete. Existing snapshots and journal histories remain retained.
 
-Scheduled builds, background model-generated semantic summaries, active snapshot
-pointer selection and compaction scheduling remain unsupported. The current
-snapshot contains factual file indexes, not generated architecture understanding.
+Background semantic summaries now use summary.go: fixed separately-budgeted batches,
+durable request/response audit and strict evidence validation. SummaryScheduler is a
+durable interval/lease tick for the composition-root loop. PublishSummaries creates
+a new immutable snapshot while retaining the factual base and journal history.
+Automatic active-pointer selection and retention/compaction scheduling remain
+composition concerns. Base Build results contain factual file indexes; generated
+summary claims remain explicitly derived and subordinate to source.
