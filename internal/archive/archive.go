@@ -35,15 +35,28 @@ func Backup(ctx context.Context, root, destination string) error {
 		return e
 	}
 	defer os.RemoveAll(stage)
-	u := url.URL{Scheme: "file", Path: filepath.Join(abs, "state.db")}
-	db, e := sql.Open("sqlite3", u.String()+"?mode=rw&_busy_timeout=5000")
-	if e != nil {
-		return e
+	// Each database snapshot is transactionally consistent. Quiesce workers when
+	// requiring a single point-in-time relationship across the separate DBs.
+	names := []string{"state.db"}
+	if st, err := os.Lstat(filepath.Join(abs, "jobs.db")); err == nil {
+		if !st.Mode().IsRegular() {
+			return errors.New("unsafe queue database")
+		}
+		names = append(names, "jobs.db")
+	} else if !os.IsNotExist(err) {
+		return err
 	}
-	defer db.Close()
-	snapshot := filepath.Join(stage, "state.db")
-	if _, e = db.ExecContext(ctx, "VACUUM INTO ?", snapshot); e != nil {
-		return e
+	for _, name := range names {
+		u := url.URL{Scheme: "file", Path: filepath.Join(abs, name)}
+		db, err := sql.Open("sqlite3", u.String()+"?mode=rw&_busy_timeout=5000")
+		if err != nil {
+			return err
+		}
+		_, err = db.ExecContext(ctx, "VACUUM INTO ?", filepath.Join(stage, name))
+		db.Close()
+		if err != nil {
+			return err
+		}
 	}
 	out, e := os.OpenFile(filepath.Join(stage, "backup.tar"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if e != nil {
@@ -91,8 +104,10 @@ func Backup(ctx context.Context, root, destination string) error {
 		_, e = io.Copy(tw, f)
 		return e
 	}
-	if e = add(snapshot, "state.db"); e != nil {
-		return e
+	for _, name := range names {
+		if e = add(filepath.Join(stage, name), name); e != nil {
+			return e
+		}
 	}
 	entries, e := os.ReadDir(filepath.Join(abs, "artifacts"))
 	if e != nil {
@@ -163,7 +178,7 @@ func Restore(ctx context.Context, archive, destination string) error {
 			return err
 		}
 		name := h.Name
-		valid := name == "state.db"
+		valid := name == "state.db" || name == "jobs.db"
 		if strings.HasPrefix(name, "artifacts/") {
 			digest := strings.TrimPrefix(name, "artifacts/")
 			b, e := hex.DecodeString(digest)
@@ -200,42 +215,63 @@ func Restore(ctx context.Context, archive, destination string) error {
 	if !seen["state.db"] {
 		return errors.New("missing database")
 	}
-	// SQLite treats an empty file as a valid new database. A restore must verify
-	// an existing application database, not silently initialize a blank one.
-	dbFile, e := os.Open(filepath.Join(stage, "state.db"))
-	if e != nil {
-		return e
+	for _, name := range []string{"state.db", "jobs.db"} {
+		if seen[name] {
+			if err := validateDatabase(ctx, filepath.Join(stage, name), name); err != nil {
+				return err
+			}
+		}
+	}
+	return os.Rename(stage, destination)
+}
+
+// SQLite accepts empty files as new databases, so validate actual headers/schema.
+func validateDatabase(ctx context.Context, path, name string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
 	}
 	header := make([]byte, 16)
-	_, e = io.ReadFull(dbFile, header)
-	dbFile.Close()
-	if e != nil || string(header) != "SQLite format 3\x00" {
+	_, err = io.ReadFull(f, header)
+	f.Close()
+	if err != nil || string(header) != "SQLite format 3\x00" {
 		return errors.New("missing SQLite database header")
 	}
-	u := url.URL{Scheme: "file", Path: filepath.Join(stage, "state.db")}
-	db, e := sql.Open("sqlite3", u.String()+"?mode=ro")
-	if e != nil {
-		return e
+	u := url.URL{Scheme: "file", Path: path}
+	db, err := sql.Open("sqlite3", u.String()+"?mode=ro")
+	if err != nil {
+		return err
 	}
+	defer db.Close()
 	var check string
-	e = db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&check)
-	if e == nil {
-		var version int
-		e = db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
-		if e == nil && version != 1 {
-			e = errors.New("unsupported application database version")
-		}
-		if e == nil {
-			var table string
-			e = db.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name='records'").Scan(&table)
-		}
-	}
-	db.Close()
-	if e != nil {
-		return e
+	if err = db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&check); err != nil {
+		return err
 	}
 	if check != "ok" {
 		return errors.New("database integrity failure")
 	}
-	return os.Rename(stage, destination)
+	if name == "state.db" {
+		var version int
+		if err = db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+			return err
+		}
+		if version != 1 {
+			return errors.New("unsupported application database version")
+		}
+		rows, err := db.QueryContext(ctx, "SELECT kind,id,value FROM records LIMIT 0")
+		if err != nil {
+			return err
+		}
+		return rows.Close()
+	}
+	for _, query := range []string{"SELECT id,idem_key,change_id,kind,generation,attempts,state,worker,expires FROM queue_jobs LIMIT 0", "SELECT delivery,payload FROM queue_receipts LIMIT 0"} {
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			return err
+		}
+		if err = rows.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

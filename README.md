@@ -1,0 +1,98 @@
+# ChangeHarbor / reviewd
+
+Self-hosted Go code review and release assessment. Deterministic host code gathers
+pinned source and evidence, sends one batched model request, validates output, and
+enforces risk floors. The model has no tools. Approval defaults to shadow.
+
+The authoritative [v3 specification](docs/specification.html), [plan](docs/PLAN.md),
+[status and operational boundaries](docs/STATUS.md), and
+[dependency inventory](docs/dependencies.md) are included.
+
+## Build and verify
+
+Requires Go >=1.24, Git and a C compiler for SQLite. This workspace has Go 1.26.
+
+```sh
+cd /workspace/reviewd
+. scripts/env.sh
+make check build
+```
+
+Elsewhere, use `make check build GO=go`. Tests use local Git, fake models and
+loopback HTTP fixture servers; no paid credentials or external telemetry needed.
+Restricted sandboxes must permit loopback listeners for HTTP tests.
+
+## Local workflow
+
+```sh
+bin/reviewd context build --repo /trusted/repo --ref HEAD --state /data/reviewd
+bin/reviewd journal reconcile --repo /trusted/repo --branch main \
+  --through HEAD --state /data/reviewd
+bin/reviewd review --repo /trusted/repo --base BASE --head HEAD \
+  --response testdata/review-response.json --state /data/reviewd > review.json
+bin/reviewd assess --run review.json --threshold 3 --state /data/reviewd
+bin/reviewd explain --run RUN_ID --state /data/reviewd
+bin/reviewd evaluate --fixtures testdata/evaluation.json
+```
+
+Commands print JSON to stdout and durable run IDs/telemetry to stderr. `assess`,
+`explain`, rendering and evaluation make no live model calls. Fake responses are
+explicit fixtures, not real semantic assessments. Exit codes: 0 complete,
+1 operational failure, 2 invalid input/configuration, 3 configured threshold or
+fixture mismatch, 4 incomplete scope/assessment.
+
+## Live model and forge review
+
+Replace `--response` with `--model-config /trusted/model.json`. The HTTP adapter
+speaks OpenAI-compatible structured chat completions. Configure explicit model
+capabilities, token/byte/cost/deadline caps and a credential environment-variable
+name. Request intent, attempts, exact responses and usage are retained locally;
+uncertain completion is never silently replayed. Unknown usage/price remains
+unknown. See [HTTP contract](internal/model/CONTRACT.md).
+
+```sh
+bin/reviewd review --url https://github.com/OWNER/REPO/pull/123 \
+  --forge-config /trusted/forge.json --model-config /trusted/model.json \
+  --state /data/reviewd
+bin/reviewd publish --run RUN_ID --forge-config /trusted/forge.json \
+  --state /data/reviewd
+```
+
+Forge configuration binds web/API host, provider repository IDs, permitted fork
+source ID, local mirror, policy and trusted CI producer IDs. Local mirrors must
+contain the captured commits. The default publish mode is shadow. Submission
+requires supported live protection/check facts and matching saved provenance;
+unknown native/human requirements withhold approval. No auto-merge occurs.
+
+## Release assessment
+
+```sh
+bin/reviewd release assess --repo /trusted/repo --baseline v1 --candidate v2 \
+  --branch main --model-config /trusted/release-model.json \
+  --policy /trusted/release-policy.json --state /data/reviewd > release.json
+bin/reviewd release render --assessment release.json --format html > release.html
+bin/reviewd release render --assessment release.json --format draft > draft.md
+```
+
+Operational evidence is supplied through `--operational-evidence` and
+`--trusted-producers`, pinned to the candidate and optional `--build-id`.
+Missing required evidence stays incomplete. New live release outputs use
+classified evidence-backed items; legacy offline fixtures remain labelled.
+The channel output is a draft and is never sent.
+
+## Service and recovery
+
+`reviewd serve --config /trusted/service.json` exposes authenticated GitHub/GitLab
+webhooks on an explicit loopback address. Durable receipt precedes acknowledgement.
+Workers use fenced leases, heartbeats and bounded retry counts. Periodic local-Git
+reconciliation catches missed events independently of review success; scheduled
+context rebuilds use durable leases. Optional background summaries require a
+separate model configuration and explicit independent limits.
+
+```sh
+bin/reviewd backup --state /data/reviewd --output /backups/reviewd.tar
+bin/reviewd restore --input /backups/reviewd.tar --state /data/restored-reviewd
+```
+
+Restore requires a new destination and verifies artifacts and SQLite integrity.
+See [operations](docs/OPERATIONS.md) for backup consistency and release packaging.

@@ -11,8 +11,10 @@ prompts and model responses in audit storage require appropriate access controls
 
 ## Backup and restore
 
-`internal/archive.Backup` uses SQLite VACUUM INTO for a consistent database copy,
-then verifies SHA-256 artifact names before archiving. Concurrent content-addressed
+`internal/archive.Backup` uses SQLite VACUUM INTO for consistent copies of state.db
+and the optional jobs.db queue, then verifies SHA-256 artifact names before
+archiving. Each database is individually consistent; quiesce workers when a
+single whole-service point-in-time relationship across the two is required. Concurrent content-addressed
 writes are safe; configure retention to avoid deleting referenced objects while
 backing up. Archive size is bounded to 1 GiB in this initial implementation.
 

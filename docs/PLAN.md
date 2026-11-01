@@ -27,3 +27,11 @@ bind loopback; tests make no external service calls. Offline release assessment
 and HTML/draft rendering examples executed successfully. CLI review smoke test
 uses an actual temporary Git repository. Validation used isolated build cache
 /tmp/reviewd-final-cache to avoid parallel first-build contention.
+
+## Continuation and remote checkpoints
+The maintainer requested continued implementation and checkpoints to
+https://github.com/kzs0/ChangeHarbor on main. Existing license history was merged
+without overwriting it. Validated components are committed and pushed as each
+ownership group settles. Round 2 adds live transport, indexing/history, durable
+workers/forge adapters, classified evidence, complete CLI paths, replay and backup.
+See STATUS.md and validation-round2-*.md for evidence and operational boundaries.

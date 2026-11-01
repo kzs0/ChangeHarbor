@@ -3,10 +3,12 @@ package archive
 import (
 	"archive/tar"
 	"context"
+	"github.com/kzs0/reviewd/internal/jobs"
 	"github.com/kzs0/reviewd/internal/storage"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRoundTripAndTraversal(t *testing.T) {
@@ -97,5 +99,45 @@ func TestBackupRefusesDanglingDestinationSymlink(t *testing.T) {
 	}
 	if st, err := os.Lstat(dest); err != nil || st.Mode()&os.ModeSymlink == 0 {
 		t.Fatal("destination changed")
+	}
+}
+
+func TestBackupRestoresDurableQueue(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	s, e := storage.Open(root)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	q, e := jobs.Open(filepath.Join(root, "jobs.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer q.Close()
+	j := jobs.Job{ID: "github:receipt", Key: "github:receipt", ChangeID: "github:1:2", Kind: "review", Generation: 1}
+	if _, e = q.ReceiveAndEnqueue(ctx, j.ID, []byte("signed payload"), []jobs.Job{j}); e != nil {
+		t.Fatal(e)
+	}
+	file := filepath.Join(t.TempDir(), "state.tar")
+	if e = Backup(ctx, root, file); e != nil {
+		t.Fatal(e)
+	}
+	dest := filepath.Join(t.TempDir(), "restored")
+	if e = Restore(ctx, file, dest); e != nil {
+		t.Fatal(e)
+	}
+	rest, e := jobs.Open(filepath.Join(dest, "jobs.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer rest.Close()
+	claimed, e := rest.Claim(ctx, "worker", time.Now(), time.Minute)
+	if e != nil || claimed == nil || claimed.ID != j.ID {
+		t.Fatalf("lost queued event %#v %v", claimed, e)
+	}
+	payload, e := rest.Payload(ctx, j.ID)
+	if e != nil || string(payload) != "signed payload" {
+		t.Fatalf("lost receipt %q %v", payload, e)
 	}
 }
