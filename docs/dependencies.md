@@ -1,6 +1,8 @@
 # Dependency inventory
 
-Go toolchain: module minimum Go 1.24; development Go 1.26.0. Both dependencies are pinned in go.mod/go.sum. Standard-library JSON, flags, HTTP, templates, Git process invocation, indexing, hashing, and testing avoid SDK/framework dependencies.
+Go toolchain: module minimum and development version Go 1.27.3 (latest stable
+from go.dev/dl at update time). Task runner: just 1.59.0; CI installs it and reads
+the Go version from go.mod. Both dependencies are pinned in go.mod/go.sum. Standard-library JSON, flags, HTTP, templates, Git process invocation, indexing, hashing, and testing avoid SDK/framework dependencies.
 
 | Direct module | Pin | License | Justification / footprint | Upgrade implications |
 | --- | --- | --- | --- | --- |

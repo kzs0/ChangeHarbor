@@ -43,7 +43,7 @@ replay. This verifies known expectations, not model finding quality or incident
 probability calibration. Historical quality/latency/cost measurements require
 real retained datasets and model responses; do not report invented benchmarks.
 
-`GO=/workspace/toolchains/go/bin/go VERSION=dev scripts/package.sh` produces a
+`VERSION=dev just package` produces a
 host-platform CGO binary archive and SHA-256 checksum. For another platform,
 provide the matching C compiler and test on that target. Review dependency
 licenses and SQLite updates before redistribution.

@@ -10,15 +10,17 @@ The authoritative [v3 specification](docs/specification.html), [plan](docs/PLAN.
 
 ## Build and verify
 
-Requires Go >=1.24, Git and a C compiler for SQLite. This workspace has Go 1.26.
+Requires Go 1.27.3, just, Git and a C compiler for SQLite. CI reads the Go
+version from `go.mod`.
 
 ```sh
 cd /workspace/reviewd
 . scripts/env.sh
-make check build
+just check build
 ```
 
-Elsewhere, use `make check build GO=go`. Tests use local Git, fake models and
+Elsewhere, use `just check build` with Go 1.27.3 on PATH, or
+`just go=/path/to/go check build`. Tests use local Git, fake models and
 loopback HTTP fixture servers; no paid credentials or external telemetry needed.
 Restricted sandboxes must permit loopback listeners for HTTP tests.
 

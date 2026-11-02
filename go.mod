@@ -1,6 +1,6 @@
 module github.com/kzs0/reviewd
 
-go 1.24.0
+go 1.27.3
 
 require (
 	github.com/kzs0/bedrock v0.5.0
