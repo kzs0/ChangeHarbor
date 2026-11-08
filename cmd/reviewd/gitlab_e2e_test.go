@@ -363,39 +363,6 @@ func TestGitLabE2EWithholdsWithoutWriting(t *testing.T) {
 		{"MR retargeted", "different branch", func(x *gitlabFixture) { x.fake.targetBranch = "release" }},
 		{"GitLab diff stale", "diff", func(x *gitlabFixture) { x.fake.mergeBase = strings.Repeat("d", 40) }},
 		{"token belongs to another user", "bot user", func(x *gitlabFixture) { x.fake.userID = 6 }},
-		{"pipelines optional", "pipelines are not required", func(x *gitlabFixture) {
-			x.fake.project = strings.Replace(x.fake.project, `"only_allow_merge_if_pipeline_succeeds":true`, `"only_allow_merge_if_pipeline_succeeds":false`, 1)
-		}},
-		{"skipped pipelines mergeable", "skipped", func(x *gitlabFixture) {
-			x.fake.project = strings.Replace(x.fake.project, `"allow_merge_on_skipped_pipeline":false`, `"allow_merge_on_skipped_pipeline":true`, 1)
-		}},
-		{"merge commits without merged results", "freshness", func(x *gitlabFixture) {
-			x.fake.project = strings.Replace(x.fake.project, `"merge_method":"ff"`, `"merge_method":"merge"`, 1)
-		}},
-		{"approvals kept on push", "reset on push", func(x *gitlabFixture) {
-			x.fake.approvalSettings = `{"reset_approvals_on_push":false,"selective_code_owner_removals":false}`
-		}},
-		{"selective code owner removal", "reset on push", func(x *gitlabFixture) {
-			x.fake.approvalSettings = `{"reset_approvals_on_push":false,"selective_code_owner_removals":true}`
-		}},
-		{"free tier approval settings", "Premium", func(x *gitlabFixture) {
-			x.fake.approvalSettingsCode, x.fake.approvalSettings = 403, `{"message":"403 Forbidden"}`
-		}},
-		{"free tier approval rules", "Premium", func(x *gitlabFixture) {
-			x.fake.rulesCode, x.fake.rules = 404, `{"message":"404 Not found"}`
-		}},
-		{"target branch unprotected", "protected", func(x *gitlabFixture) {
-			x.fake.protectedCode, x.fake.protected = 404, `{"message":"404 Not found"}`
-		}},
-		{"force push allowed", "force push", func(x *gitlabFixture) {
-			x.fake.protected = `{"name":"main","allow_force_push":true}`
-		}},
-		{"two human approvals required", "human approval", func(x *gitlabFixture) {
-			x.fake.rules = `{"rules":[{"name":"Maintainers","rule_type":"regular","approvals_required":2,"approved":false,"eligible_approvers":[{"id":5},{"id":6}],"approved_by":[]}]}`
-		}},
-		{"code owners exclude bot", "human approval", func(x *gitlabFixture) {
-			x.fake.rules = `{"rules":[{"name":"CODEOWNERS","rule_type":"code_owner","approvals_required":1,"approved":false,"eligible_approvers":[{"id":8}],"approved_by":[]}]}`
-		}},
 		{"no head pipeline", "no head pipeline", func(x *gitlabFixture) { x.fake.pipelineID = 0 }},
 		{"pipeline running", "not succeeded", func(x *gitlabFixture) { x.fake.pipeline["status"] = "running" }},
 		{"pipeline failed", "not succeeded", func(x *gitlabFixture) { x.fake.pipeline["status"] = "failed" }},
@@ -531,5 +498,58 @@ func TestGitHubTokenSchemeIsRejected(t *testing.T) {
 	os.WriteFile(path, b, 0600)
 	if _, e := loadForgeConfig(path); e == nil {
 		t.Fatal("GitLab-only token scheme accepted for GitHub")
+	}
+}
+
+// Approvals are submitted whenever configured, whatever the forge's own
+// protection settings, and on GitLab Free.
+func TestGitLabE2EApprovesRegardlessOfNativeProtection(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(*gitlabFixture)
+	}{
+		{"pipelines optional", func(x *gitlabFixture) {
+			x.fake.project = strings.Replace(x.fake.project, `"only_allow_merge_if_pipeline_succeeds":true`, `"only_allow_merge_if_pipeline_succeeds":false`, 1)
+		}},
+		{"skipped pipelines mergeable", func(x *gitlabFixture) {
+			x.fake.project = strings.Replace(x.fake.project, `"allow_merge_on_skipped_pipeline":false`, `"allow_merge_on_skipped_pipeline":true`, 1)
+		}},
+		{"merge commits without merged results", func(x *gitlabFixture) {
+			x.fake.project = strings.Replace(x.fake.project, `"merge_method":"ff"`, `"merge_method":"merge"`, 1)
+		}},
+		{"approvals kept on push", func(x *gitlabFixture) {
+			x.fake.approvalSettings = `{"reset_approvals_on_push":false,"selective_code_owner_removals":false}`
+		}},
+		{"selective code owner removal", func(x *gitlabFixture) {
+			x.fake.approvalSettings = `{"reset_approvals_on_push":false,"selective_code_owner_removals":true}`
+		}},
+		{"free tier approval settings", func(x *gitlabFixture) {
+			x.fake.approvalSettingsCode, x.fake.approvalSettings = 403, `{"message":"403 Forbidden"}`
+		}},
+		{"free tier approval rules", func(x *gitlabFixture) {
+			x.fake.rulesCode, x.fake.rules = 404, `{"message":"404 Not found"}`
+		}},
+		{"target branch unprotected", func(x *gitlabFixture) {
+			x.fake.protectedCode, x.fake.protected = 404, `{"message":"404 Not found"}`
+		}},
+		{"force push allowed", func(x *gitlabFixture) {
+			x.fake.protected = `{"name":"main","allow_force_push":true}`
+		}},
+		{"two human approvals required", func(x *gitlabFixture) {
+			x.fake.rules = `{"rules":[{"name":"Maintainers","rule_type":"regular","approvals_required":2,"approved":false,"eligible_approvers":[{"id":5},{"id":6}],"approved_by":[]}]}`
+		}},
+		{"code owners exclude bot", func(x *gitlabFixture) {
+			x.fake.rules = `{"rules":[{"name":"CODEOWNERS","rule_type":"code_owner","approvals_required":1,"approved":false,"eligible_approvers":[{"id":8}],"approved_by":[]}]}`
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := newGitLabFixture(t)
+			run := x.review()
+			tc.mut(x)
+			code, out, stderr := x.publish(run)
+			if p := decode(t, out); code != 0 || p.State != "published" || len(x.fake.approveSHAs) != 1 {
+				t.Fatalf("exit %d %+v %s", code, p, stderr)
+			}
+		})
 	}
 }

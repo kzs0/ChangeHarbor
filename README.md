@@ -115,9 +115,10 @@ bin/reviewd serve --config changeharbor.yaml   # needs a "service" section
 ```
 
 Local mirrors must contain the captured commits (or set `mirror.sync`).
-Submission requires supported live protection/check facts and matching saved
-provenance; unknown native/human requirements withhold approval. No
-auto-merge occurs.
+Approvals are submitted whenever `publish.approvals` is `submit` and
+ChangeHarbor's own evidence holds; forge protection settings never block them.
+ChangeHarbor withdraws its own approval when the change or its target moves.
+No auto-merge occurs.
 
 ### Review comments
 
@@ -157,22 +158,20 @@ bin/reviewd doctor                 # read-only preflight, every GitLab repositor
 bin/reviewd revalidate             # withdraw approvals whose MR moved
 ```
 
-`doctor` checks token identity/scope/expiry, the bot's role, project merge and
-approval settings, branch protection, approval rules, CI trust and the mirror.
-`revalidate` withdraws ChangeHarbor approvals whose MR head or target moved
-since approval; `serve` runs it after each push to the target branch. Under
+`doctor` checks token identity/scope/expiry, the bot's role, CI trust and the
+mirror (errors), and reports merge/approval settings, branch protection and
+approval rules as warnings. `revalidate` withdraws ChangeHarbor approvals
+(GitLab unapprove, GitHub review dismissal) whose head or target moved; `serve`
+runs it for each MR/PR event before reviewing, and after each target push. Under
 `serve`, MR webhooks run the whole flow (API-captured review, comment, publish)
 per each repository's `publish` settings. One
 process may write a state directory at a time (`<state>/writer.lock`).
 
-Approval is submitted only when live GitLab facts establish: MR open, not draft
-and targeting the configured branch; pipelines must succeed with fast-forward,
-semi-linear or merged results pipelines; approvals reset on push; protected
-target without force push; approval rules completable by the bot; and a
+Approval is submitted when live GitLab facts establish: MR open, not draft
+and targeting the configured branch; the token is the bot; CI trust holds; and a
 successful head pipeline in the target project, bound to the reviewed head (or
-a merged-results commit of exactly the live target and head), containing every
-required job. Premium approval endpoints are required: on GitLab Free the run is
-withheld. Definite provider refusals are audited as withheld and may be retried;
+a merged-results commit of exactly the live target and head), contains every
+required job. It works on every GitLab tier. Definite provider refusals are audited as withheld and may be retried;
 ambiguous outcomes stay pending for reconciliation.
 
 ## Release assessment

@@ -110,10 +110,10 @@ func (s selection) forRun(ctx context.Context, st *storage.Store, runID string) 
 }
 
 // repositories returns the named repository, or every repository of the
-// provider when name is empty.
+// provider (any provider when provider is empty) when name is empty.
 func (s selection) repositories(name, provider string) ([]forgeConfig, error) {
 	if s.legacy != nil {
-		if s.legacy.Provider != provider {
+		if provider != "" && s.legacy.Provider != provider {
 			return nil, fmt.Errorf("this command supports %s repositories", provider)
 		}
 		return []forgeConfig{*s.legacy}, nil
@@ -127,7 +127,7 @@ func (s selection) repositories(name, provider string) ([]forgeConfig, error) {
 		if e != nil {
 			return nil, e
 		}
-		if c.Provider == provider {
+		if provider == "" || c.Provider == provider {
 			out = append(out, c)
 		}
 	}

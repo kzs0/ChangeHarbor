@@ -37,13 +37,12 @@ infrastructure; event payload paths never authorize cloning or source execution.
 Missing Git objects produce an error, not a completed review. Live model and forge
 credentials must be supplied by the operator and remain outside repository input.
 
-Configuration is one changeharbor.yaml plus a resolved lock file (docs/design/config.md). GitLab deployment hardening (CI trust, webhook automation, mirror sync, doctor, approval revalidation, single-writer lock) is described in docs/design/gitlab-deployment.md. GitLab submission is supported when live facts establish native approval reset,
-branch protection, pipeline requirements, trusted head-pipeline provenance and
-bot-completable approval rules (see internal/forge/gitlab/CONTRACT.md); GitLab
-Free lacks the Premium approval endpoints and remains withheld. GitHub
-submission requires the supported protection/check facts and host policy;
-unsupported human/protection requirements remain unmet. Native protections
-remain necessary.
+Configuration is one changeharbor.yaml plus a resolved lock file (docs/design/config.md). GitLab deployment hardening (CI trust, webhook automation, mirror sync, doctor, approval revalidation, single-writer lock) is described in docs/design/gitlab-deployment.md. Approvals are submitted whenever configured and ChangeHarbor's own evidence
+holds (revisions, trusted pipeline/checks, CI trust, risk policy; see
+internal/forge/gitlab/CONTRACT.md); forge protection settings never block
+them, on any GitLab tier or on GitHub. ChangeHarbor withdraws its own approval
+when the change or its target moves, so approvals don't outlive the reviewed
+commit even where the forge keeps approvals on push.
 
 Verified history counting does not turn a new installation into known-zero
 familiarity. Provider backfill evidence must cover the configured interval and

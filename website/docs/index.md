@@ -2,7 +2,7 @@
 
 ChangeHarbor reviews merge requests and pull requests with a language model,
 **explains every decision**, and only approves a change when it can prove
-the forge's own protections will hold. It runs on your machine, reads code
+its evidence holds. It runs on your machine, reads code
 from a local mirror, and never merges anything.
 
 <div class="grid cards" markdown>
@@ -29,8 +29,9 @@ from a local mirror, and never merges anything.
 4. **Approves** only when every requirement holds on the live forge:
     - the risk is at or below your threshold;
     - checks passed on the reviewed commit;
-    - native protections are in place;
     - nothing moved since the review.
+
+    When the change moves later, ChangeHarbor withdraws its own approval.
 
 Every write is off by default. In the default `shadow` mode ChangeHarbor
 evaluates everything and tells you what it *would* do.

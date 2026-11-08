@@ -77,3 +77,49 @@ func TestCommentWriteRequiresResponseIdentity(t *testing.T) {
 		t.Fatalf("missing author must be ambiguous: %v", e)
 	}
 }
+
+func TestChangeReportsState(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"id":1,"state":"closed","head":{"sha":"aa","repo":{"id":10}},"base":{"sha":"bb","repo":{"id":10}}}`)
+	}))
+	defer s.Close()
+	c, e := NewClient(s.URL, "", s.Client(), 4096).Change(context.Background(), "o", "r", 1)
+	if e != nil || c.State != "closed" {
+		t.Fatalf("%+v %v", c, e)
+	}
+}
+
+func TestDismissReview(t *testing.T) {
+	var path string
+	var in map[string]string
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.Method + " " + r.URL.Path
+		json.NewDecoder(r.Body).Decode(&in)
+		switch r.URL.Path {
+		case "/repos/o/r/pulls/3/reviews/77/dismissals":
+			fmt.Fprint(w, `{"id":77,"state":"DISMISSED"}`)
+		case "/repos/o/r/pulls/3/reviews/78/dismissals":
+			w.WriteHeader(422) // already dismissed or not an approval
+		case "/repos/o/r/pulls/3/reviews/79/dismissals":
+			w.WriteHeader(404)
+		default:
+			w.WriteHeader(502)
+		}
+	}))
+	defer s.Close()
+	c := NewClient(s.URL, "t", s.Client(), 4096)
+	if e := c.DismissReview(context.Background(), "o", "r", 3, "77", "head moved"); e != nil || path != "PUT /repos/o/r/pulls/3/reviews/77/dismissals" || in["event"] != "DISMISS" || in["message"] != "head moved" {
+		t.Fatalf("%v %s %v", e, path, in)
+	}
+	for _, id := range []string{"78", "79"} {
+		if e := c.DismissReview(context.Background(), "o", "r", 3, id, "x"); e != nil {
+			t.Fatalf("%s: already-gone review must be idempotent: %v", id, e)
+		}
+	}
+	if e := c.DismissReview(context.Background(), "o", "r", 3, "80", "x"); e == nil {
+		t.Fatal("server error hidden")
+	}
+	if e := c.DismissReview(context.Background(), "o", "r", 3, "../1", "x"); e == nil {
+		t.Fatal("invalid review ID accepted")
+	}
+}

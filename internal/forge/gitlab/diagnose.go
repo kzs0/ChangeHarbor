@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
-// Check is one deployment preflight result. Errors block approval
-// publication; warnings explain predictable withholding or excess privilege.
+// Check is one deployment preflight result. Errors stop ChangeHarbor from
+// working; warnings describe protection the forge itself isn't providing.
+// Approvals never depend on protection settings.
 type Check struct {
 	Name     string
 	OK       bool
@@ -114,34 +115,38 @@ func (c *Client) Diagnose(ctx context.Context, in DiagnoseInput) ([]Check, error
 	if e != nil {
 		return nil, e
 	}
-	out = append(out, cond(p.PipelineMustSucceed, "pipelines_required", "error", "pipelines must succeed before merge", "enable 'Pipelines must succeed'"))
-	out = append(out, cond(!p.AllowSkippedPipeline, "skipped_pipelines", "error", "skipped pipelines cannot be merged", "disable 'Skipped pipelines are considered successful'"))
-	out = append(out, cond(p.MergeMethod == "ff" || p.MergeMethod == "rebase_merge" || p.MergedResultsPipelines, "target_freshness", "error",
-		"merge method "+p.MergeMethod, "use fast-forward or semi-linear merges, or enable merged results pipelines"))
-	out = append(out, cond(!p.MergeTrains, "merge_trains", "warning", "merge trains disabled", "merge train pipelines cannot be bound to the reviewed commit; approvals will be withheld"))
+	out = append(out, cond(p.PipelineMustSucceed, "pipelines_required", "warning", "pipelines must succeed before merge",
+		"GitLab lets MRs merge with a failing pipeline; ChangeHarbor still only approves after its required jobs pass ('Pipelines must succeed' adds a merge gate)"))
+	out = append(out, cond(!p.AllowSkippedPipeline, "skipped_pipelines", "warning", "skipped pipelines cannot be merged",
+		"skipped pipelines count as passing for merges (not for ChangeHarbor approvals)"))
+	out = append(out, cond(p.MergeMethod == "ff" || p.MergeMethod == "rebase_merge" || p.MergedResultsPipelines, "target_freshness", "warning",
+		"merge method "+p.MergeMethod, "an MR can merge onto a target newer than the one ChangeHarbor reviewed; ChangeHarbor withdraws its approval when the target moves"))
+	out = append(out, cond(!p.MergeTrains, "merge_trains", "warning", "merge trains disabled", "merge train pipelines cannot be bound to the reviewed commit; approvals are withheld while a train pipeline is the head pipeline"))
 
 	a, e := c.ApprovalSettings(ctx, in.ProjectID)
 	switch {
 	case e != nil && !unavailable(e):
 		return nil, e
 	case e != nil:
-		out = append(out, fail("approval_reset", "error", "approval settings unavailable; GitLab Premium is required"))
+		out = append(out, fail("approval_reset", "warning", "approval settings unavailable (GitLab Free); approvals are kept on push, so ChangeHarbor withdraws its own when the MR changes"))
 	default:
-		out = append(out, cond(a.ResetOnPush && !a.SelectiveCodeOwnerRemovals, "approval_reset", "error", "approvals reset on push", "enable 'Remove all approvals when commits are added'"))
+		out = append(out, cond(a.ResetOnPush && !a.SelectiveCodeOwnerRemovals, "approval_reset", "warning", "approvals reset on push",
+			"approvals are kept when commits are added; ChangeHarbor withdraws its own when the MR changes, but other approvals remain"))
 	}
 
 	b, e := c.ProtectedBranch(ctx, in.ProjectID, in.Branch)
 	if e != nil {
 		return nil, e
 	}
-	out = append(out, cond(b.Protected && !b.AllowForcePush, "branch_protection", "error", "protected without force push", "protect "+in.Branch+" and disallow force push"))
+	out = append(out, cond(b.Protected && !b.AllowForcePush, "branch_protection", "warning", "protected without force push",
+		in.Branch+" is unprotected or allows force push; history can change under reviewed code"))
 
 	var rules []projectRule
 	switch e := c.request(ctx, "GET", "/projects/"+in.ProjectID+"/approval_rules?per_page=100", nil, &rules); {
 	case e != nil && !unavailable(e):
 		return nil, e
 	case e != nil:
-		out = append(out, fail("approval_rules", "error", "approval rules unavailable; GitLab Premium is required"))
+		out = append(out, fail("approval_rules", "warning", "approval rules unavailable (GitLab Free); approvals are optional there"))
 	default:
 		var blocked []string
 		for _, r := range rules {
@@ -153,7 +158,7 @@ func (c *Client) Diagnose(ctx context.Context, in DiagnoseInput) ([]Check, error
 			}
 		}
 		if len(blocked) > 0 {
-			out = append(out, fail("approval_rules", "warning", "bot cannot satisfy rules "+strings.Join(blocked, ", ")+"; approvals will be withheld"))
+			out = append(out, fail("approval_rules", "warning", "bot cannot satisfy rules "+strings.Join(blocked, ", ")+" alone; its approval counts toward them but humans must also approve"))
 		} else {
 			out = append(out, pass("approval_rules", "bot can satisfy every required rule"))
 		}

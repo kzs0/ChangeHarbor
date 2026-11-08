@@ -34,8 +34,8 @@ reviewd serve --config /etc/changeharbor/changeharbor.yaml
 
 | Event | Action |
 | --- | --- |
-| MR/PR opened or updated | Capture from the API, sync the mirror, review, then comment and approve per `publish`. |
-| Push to the configured branch | Update the change journal, then withdraw approvals whose MR head or target moved (GitLab). |
+| MR/PR opened or updated | Withdraw ChangeHarbor's approval of an older head, then capture from the API, sync the mirror, review, and comment and approve per `publish`. |
+| Push to the configured branch | Update the change journal, then withdraw approvals whose target moved. |
 
 Webhook payloads only *name* the change. Commits always come from the API.
 

@@ -108,40 +108,6 @@ func (c *Client) Checks(ctx context.Context, owner, repo, revision string, maxPa
 	return nil, errors.New("check pagination cap exceeded")
 }
 
-type Protection struct {
-	Known, RequiredReviews, StrictChecks bool
-	RequiredContexts                     []string
-	Reason                               string
-}
-
-func (c *Client) Protection(ctx context.Context, owner, repo, branch string) (Protection, error) {
-	p, e := repoPath(owner, repo)
-	if e != nil {
-		return Protection{}, e
-	}
-	if branch == "" || strings.ContainsAny(branch, "\x00\r\n") {
-		return Protection{}, errors.New("branch required")
-	}
-	var x struct {
-		Checks *struct {
-			Strict   bool
-			Contexts []string
-		} `json:"required_status_checks"`
-		Reviews *struct {
-			Count int `json:"required_approving_review_count"`
-		} `json:"required_pull_request_reviews"`
-	}
-	if e = c.request(ctx, "GET", p+"/branches/"+url.PathEscape(branch)+"/protection", nil, &x); e != nil {
-		return Protection{Reason: "branch protection unavailable"}, e
-	}
-	r := Protection{Known: true, RequiredReviews: x.Reviews != nil && x.Reviews.Count > 0}
-	if x.Checks != nil {
-		r.StrictChecks = x.Checks.Strict
-		r.RequiredContexts = x.Checks.Contexts
-	}
-	return r, nil
-}
-
 // Approve is a revision-bound transport primitive. Only host publication code
 // may call it after policy/check/native-protection and job generation validation.
 func (c *Client) Approve(ctx context.Context, owner, repo string, number int, head string) (string, error) {
@@ -301,4 +267,22 @@ func (c *Client) CurrentUser(ctx context.Context) (string, error) {
 		return "", errors.New("missing GitHub user identity")
 	}
 	return fmt.Sprint(x.ID), nil
+}
+
+// DismissReview withdraws a review ChangeHarbor submitted. A review that is
+// already dismissed or gone (404/422) counts as withdrawn.
+func (c *Client) DismissReview(ctx context.Context, owner, repo string, number int, reviewID, message string) error {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return e
+	}
+	if n, err := strconv.ParseInt(reviewID, 10, 64); err != nil || n <= 0 || strconv.FormatInt(n, 10) != reviewID || number <= 0 || message == "" {
+		return errors.New("invalid dismissal request")
+	}
+	e = c.request(ctx, "PUT", fmt.Sprintf("%s/pulls/%d/reviews/%s/dismissals", p, number, reviewID), map[string]string{"message": message, "event": "DISMISS"}, nil)
+	var se *StatusError
+	if errors.As(e, &se) && (se.Code == 404 || se.Code == 422) {
+		return nil
+	}
+	return e
 }
