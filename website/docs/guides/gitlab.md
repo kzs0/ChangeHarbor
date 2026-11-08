@@ -144,7 +144,7 @@ marked `error`: approvals are withheld until you do. With
 
 ```sh
 reviewd review --url https://gitlab.com/group/app/-/merge_requests/42
-reviewd comment --run RUN_ID     # the comment it would post
+reviewd comment --run RUN_ID     # the summary and inline comments it would post
 reviewd publish --run RUN_ID     # would approve / would withhold: reason
 ```
 
@@ -166,8 +166,9 @@ repositories:
       path: /srv/mirrors/app.git
     policy: policies/app.json
     publish:
-      comments: post       # start with comments...
-      approvals: submit    # ...then approvals
+      comments: post          # start with the summary comment...
+      inline_comments: post   # ...and comments on the changed lines
+      approvals: submit       # ...then approvals
 ```
 
 ## 11. Automate with webhooks

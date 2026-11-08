@@ -42,3 +42,8 @@ follow redirects, cap response bytes and return `*StatusError` for non-2xx.
   protections, protection gaps are warnings.
 - `Unapprove` (404 = already withdrawn) and `ApprovedBy` support revalidation,
   which withdraws ChangeHarbor's approval whenever the MR head or target moved.
+- `Discussions` lists MR discussions (first note, system notes skipped).
+  `CreateDiscussion(project, iid, body, Position)` starts a diff discussion
+  positioned with `base_sha`, `start_sha` (`Change.StartOID`), `head_sha`,
+  paths and exactly one of `new_line`/`old_line`; 401/403/404/422 are
+  `ErrRejected`, a response without a note is ambiguous.

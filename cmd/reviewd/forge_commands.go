@@ -51,6 +51,8 @@ type forgeConfig struct {
 	BotUserID   string `json:"bot_user_id,omitempty"`
 	TokenScheme string `json:"token_scheme,omitempty"`
 	CommentMode string `json:"comment_mode,omitempty"`
+	// InlineCommentMode is "" (render the plan only), "off" or "post".
+	InlineCommentMode string `json:"inline_comment_mode,omitempty"`
 	// CITrust ("external_config" or "unchanged_config") and CIPaths decide
 	// whether the head pipeline's definition is trusted (GitLab). SyncRemote
 	// names a remote configured in the mirror to fetch from before use.
@@ -126,6 +128,12 @@ func validateForgeConfig(c forgeConfig) (forgeConfig, error) {
 	}
 	if c.CommentMode != "" && c.CommentMode != "post" && c.CommentMode != "off" {
 		return c, errors.New("comment_mode must be empty (render only), off or post")
+	}
+	if c.InlineCommentMode != "" && c.InlineCommentMode != "post" && c.InlineCommentMode != "off" {
+		return c, errors.New("inline_comment_mode must be empty (render only), off or post")
+	}
+	if c.InlineCommentMode == "post" && c.BotUserID == "" {
+		return c, errors.New("inline_comment_mode post requires bot_user_id")
 	}
 	if c.CommentMode == "post" && c.BotUserID == "" {
 		return c, errors.New("comment_mode post requires bot_user_id")
@@ -869,10 +877,19 @@ func commentCommand(ctx context.Context, args []string) (int, error) {
 	})
 }
 
-// commentRun assumes the caller holds the state lock.
+// commentOutput keeps the summary comment's fields at the top level and adds
+// the inline comment result.
+type commentOutput struct {
+	publish.CommentPublication
+	Inline publish.InlinePublication
+}
+
+// commentRun publishes the summary comment and the inline comments, each per
+// its own mode. It assumes the caller holds the state lock.
 func commentRun(ctx context.Context, c forgeConfig, s *storage.Store, runID string) (any, int, error) {
-	if c.CommentMode == "off" {
-		return publish.CommentPublication{RunID: runID, State: "off", Reason: "comments are off"}, 0, nil
+	if c.CommentMode == "off" && c.InlineCommentMode == "off" {
+		return commentOutput{CommentPublication: publish.CommentPublication{RunID: runID, State: "off", Reason: "comments are off"},
+			Inline: publish.InlinePublication{RunID: runID, State: "off", Reason: "inline comments are off"}}, 0, nil
 	}
 	b, e := s.Load(ctx, "review_provenance", runID)
 	if e != nil {
@@ -892,15 +909,30 @@ func commentRun(ctx context.Context, c forgeConfig, s *storage.Store, runID stri
 	if p.ConfigDigest != forgeConfigDigest(c) || p.PackageDigest != r.Package.Digest {
 		return nil, 4, errors.New("trusted configuration or review package changed")
 	}
+	key := fmt.Sprintf("%s:%s:%d", c.Provider, c.RepositoryID, p.Capture.Number)
+	summary, code, e := summaryComment(ctx, c, s, runID, key, p, r)
+	if e != nil {
+		return nil, code, e
+	}
+	inline, inlineCode, e := inlineComments(ctx, c, s, runID, key, p, r)
+	if e != nil {
+		return nil, inlineCode, e
+	}
+	return commentOutput{CommentPublication: summary, Inline: inline}, max(code, inlineCode), nil
+}
+
+func summaryComment(ctx context.Context, c forgeConfig, s *storage.Store, runID, key string, p forgeProvenance, r review.Result) (publish.CommentPublication, int, error) {
+	if c.CommentMode == "off" {
+		return publish.CommentPublication{RunID: runID, ChangeKey: key, State: "off", Reason: "comments are off"}, 0, nil
+	}
 	rendered, e := report.RenderReview(r)
 	if e != nil {
-		return nil, 1, e
+		return publish.CommentPublication{}, 1, e
 	}
-	key := fmt.Sprintf("%s:%s:%d", c.Provider, c.RepositoryID, p.Capture.Number)
 	body, e := publish.RenderComment(publish.CommentContent{ChangeKey: key, RunID: runID, Head: p.Capture.Head, Status: r.Status,
 		ModelRisk: r.Review.ModelMergeRisk, Minimum: r.Minimum, EffectiveRisk: r.EffectiveRisk, Threshold: r.Threshold, Report: rendered.Markdown})
 	if e != nil {
-		return nil, 1, e
+		return publish.CommentPublication{}, 1, e
 	}
 	if c.CommentMode != "post" {
 		return publish.CommentPublication{RunID: runID, ChangeKey: key, State: "shadow", Reason: "comment posting disabled", Body: body}, 0, nil
@@ -908,12 +940,111 @@ func commentRun(ctx context.Context, c forgeConfig, s *storage.Store, runID stri
 	service := publish.CommentService{Remote: &forgeComments{c: c, provenance: p}, Audit: s}
 	out, e := service.Publish(ctx, publish.CommentRequest{RunID: runID, ChangeKey: key, BotID: c.BotUserID, Body: body})
 	if e != nil {
-		return nil, 1, e
+		return publish.CommentPublication{}, 1, e
 	}
 	if out.State != "published" {
 		return out, 4, nil
 	}
 	return out, 0, nil
+}
+
+// inlineComments posts one comment per anchored finding (post), prints the
+// plan without remote calls (shadow, the default), or does nothing (off).
+func inlineComments(ctx context.Context, c forgeConfig, s *storage.Store, runID, key string, p forgeProvenance, r review.Result) (publish.InlinePublication, int, error) {
+	if c.InlineCommentMode == "off" {
+		return publish.InlinePublication{RunID: runID, ChangeKey: key, State: "off", Reason: "inline comments are off"}, 0, nil
+	}
+	targets, e := publish.InlineTargets(key, runID, r.Review.Findings)
+	if e != nil {
+		return publish.InlinePublication{}, 1, e
+	}
+	if c.InlineCommentMode != "post" {
+		if targets == nil {
+			targets = []publish.InlineTarget{}
+		}
+		return publish.InlinePublication{RunID: runID, ChangeKey: key, State: "shadow", Reason: "inline comment posting disabled", Planned: targets}, 0, nil
+	}
+	service := publish.InlineService{Remote: &forgeInline{forgeComments{c: c, provenance: p}}, Audit: s}
+	out, e := service.Publish(ctx, publish.InlineRequest{RunID: runID, ChangeKey: key, BotID: c.BotUserID, Targets: targets})
+	if e != nil {
+		return publish.InlinePublication{}, 1, e
+	}
+	if out.State != "published" {
+		return out, 4, nil
+	}
+	return out, 0, nil
+}
+
+// forgeInline binds inline comments to one change: GitLab diff discussions,
+// or GitHub review comments created as one COMMENT review.
+type forgeInline struct{ forgeComments }
+
+func (f *forgeInline) ListInline(ctx context.Context) ([]publish.InlineComment, error) {
+	out := []publish.InlineComment{}
+	n := f.provenance.Capture.Number
+	if f.c.Provider == "gitlab" {
+		ds, e := gitlabClient(f.c).Discussions(ctx, f.c.ProjectID, n, 20)
+		for _, d := range ds {
+			out = append(out, publish.InlineComment{ID: d.NoteID, Body: d.Body, AuthorID: d.AuthorID})
+		}
+		return out, e
+	}
+	cs, e := f.github().ReviewComments(ctx, f.c.Owner, f.c.Repository, n, 20)
+	for _, x := range cs {
+		out = append(out, publish.InlineComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID})
+	}
+	return out, e
+}
+
+func (f *forgeInline) CreateInline(ctx context.Context, ts []publish.InlineTarget) (publish.InlineComment, error) {
+	n, head := f.provenance.Capture.Number, f.provenance.Capture.Head
+	if f.c.Provider != "gitlab" {
+		cs := make([]gh.NewReviewComment, 0, len(ts))
+		for _, t := range ts {
+			side := "RIGHT"
+			if t.Side == "old" {
+				side = "LEFT"
+			}
+			cs = append(cs, gh.NewReviewComment{Path: t.Path, Line: t.Line, Side: side, Body: t.Body})
+		}
+		x, e := f.github().CreateReviewComments(ctx, f.c.Owner, f.c.Repository, n, head, cs)
+		return publish.InlineComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID}, commentWriteError(e)
+	}
+	client := gitlabClient(f.c)
+	ch, e := client.Change(ctx, f.c.ProjectID, n)
+	if e != nil {
+		return publish.InlineComment{}, e
+	}
+	if ch.HeadOID != head {
+		return publish.InlineComment{}, fmt.Errorf("%w: merge request head moved", publish.ErrNotWritten)
+	}
+	var last publish.InlineComment
+	for _, t := range ts {
+		pos := gl.Position{BaseSHA: ch.MergeBaseOID, StartSHA: ch.StartOID, HeadSHA: head, OldPath: t.Path, NewPath: t.Path}
+		if t.Side == "old" {
+			pos.OldLine = t.Line
+		} else {
+			pos.NewLine = t.Line
+		}
+		x, e := client.CreateDiscussion(ctx, f.c.ProjectID, n, t.Body, pos)
+		if e != nil {
+			return publish.InlineComment{}, commentWriteError(e)
+		}
+		if x.AuthorID != f.c.BotUserID {
+			return publish.InlineComment{ID: x.ID, AuthorID: x.AuthorID}, nil
+		}
+		last = publish.InlineComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID}
+	}
+	return last, nil
+}
+
+func (f *forgeInline) UpdateInline(ctx context.Context, id, body string) (publish.InlineComment, error) {
+	if f.c.Provider == "gitlab" {
+		x, e := gitlabClient(f.c).UpdateNote(ctx, f.c.ProjectID, f.provenance.Capture.Number, id, body)
+		return publish.InlineComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID}, commentWriteError(e)
+	}
+	x, e := f.github().UpdateReviewComment(ctx, f.c.Owner, f.c.Repository, id, body)
+	return publish.InlineComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID}, commentWriteError(e)
 }
 
 type forgeComments struct {

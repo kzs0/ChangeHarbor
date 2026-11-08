@@ -427,3 +427,81 @@ func (c *Client) ProjectByPath(ctx context.Context, path string) (Project, error
 	}
 	return Project{ID: fmt.Sprint(x.ID), DefaultBranch: x.DefaultBranch, Path: x.Path}, nil
 }
+
+// Discussion is the first note of a merge request discussion.
+type Discussion struct{ ID, NoteID, Body, AuthorID string }
+
+// Discussions lists merge request discussions (first note of each), skipping
+// system notes, with bounded pagination.
+func (c *Client) Discussions(ctx context.Context, id string, number, maxPages int) ([]Discussion, error) {
+	if !numeric.MatchString(id) || number <= 0 || maxPages <= 0 || maxPages > 1000 {
+		return nil, errors.New("invalid discussions request")
+	}
+	out := []Discussion{}
+	for page := 1; page <= maxPages; page++ {
+		var xs []struct {
+			ID    string `json:"id"`
+			Notes []struct {
+				ID     int64  `json:"id"`
+				Body   string `json:"body"`
+				System bool   `json:"system"`
+				Author struct {
+					ID int64 `json:"id"`
+				} `json:"author"`
+			} `json:"notes"`
+		}
+		if e := c.request(ctx, "GET", fmt.Sprintf("/projects/%s/merge_requests/%d/discussions?per_page=100&page=%d", id, number, page), nil, &xs); e != nil {
+			return nil, e
+		}
+		for _, x := range xs {
+			if len(x.Notes) == 0 || x.Notes[0].System {
+				continue
+			}
+			n := x.Notes[0]
+			if x.ID == "" || n.ID <= 0 || n.Author.ID <= 0 {
+				return nil, errors.New("invalid discussion identity")
+			}
+			out = append(out, Discussion{ID: x.ID, NoteID: fmt.Sprint(n.ID), Body: n.Body, AuthorID: fmt.Sprint(n.Author.ID)})
+		}
+		if len(xs) < 100 {
+			return out, nil
+		}
+	}
+	return nil, errors.New("discussion pagination cap exceeded")
+}
+
+// Position pins a discussion to one line of the merge request diff. Exactly
+// one of OldLine (removed line) and NewLine (added or context line) is set.
+type Position struct {
+	BaseSHA, StartSHA, HeadSHA, OldPath, NewPath string
+	OldLine, NewLine                             int
+}
+
+// CreateDiscussion starts a diff discussion and returns its first note with
+// the author. 401/403/404/422 are ErrRejected; a response without a note is
+// ambiguous.
+func (c *Client) CreateDiscussion(ctx context.Context, id string, number int, body string, p Position) (Comment, error) {
+	if !numeric.MatchString(id) || number <= 0 || body == "" || p.OldPath == "" || p.NewPath == "" ||
+		!oid.MatchString(p.BaseSHA) || !oid.MatchString(p.StartSHA) || !oid.MatchString(p.HeadSHA) ||
+		(p.OldLine > 0) == (p.NewLine > 0) || p.OldLine < 0 || p.NewLine < 0 {
+		return Comment{}, errors.New("invalid discussion request")
+	}
+	pos := map[string]any{"position_type": "text", "base_sha": p.BaseSHA, "start_sha": p.StartSHA, "head_sha": p.HeadSHA, "old_path": p.OldPath, "new_path": p.NewPath}
+	if p.NewLine > 0 {
+		pos["new_line"] = p.NewLine
+	} else {
+		pos["old_line"] = p.OldLine
+	}
+	b, _ := json.Marshal(map[string]any{"body": body, "position": pos})
+	var x struct {
+		ID    string        `json:"id"`
+		Notes []writtenNote `json:"notes"`
+	}
+	if e := c.request(ctx, "POST", fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", id, number), bytes.NewReader(b), &x); e != nil {
+		return Comment{}, noteRejection(e)
+	}
+	if len(x.Notes) == 0 {
+		return Comment{}, errors.New("ambiguous discussion response")
+	}
+	return x.Notes[0].comment()
+}

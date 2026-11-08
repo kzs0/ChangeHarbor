@@ -22,7 +22,7 @@ fixture servers. No paid inference or real forge write is used to validate code.
   admission, fenced leases/heartbeat/retry ceilings and shadow review workers.
   Periodic tracked-branch reconciliation catches locally available missed changes.
 - Bounded GitHub/GitLab immutable-change reads, checks and protection diagnostics;
-  owned-comment reconciliation; revision-bound approval transport plus audited
+  owned-comment reconciliation; inline review comments per anchored finding with fingerprint dedup and outdated marking (docs/design/inline-comments.md); revision-bound approval transport plus audited
   publication intent, stale-state refusal and conservative capability handling.
 - One-call release assessment with immutable local scope, required completeness,
   risk floors/readiness, classified evidence/anchors and pinned/fresh operational

@@ -620,7 +620,7 @@ func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc 
 		return e
 	}
 	defer s.Close()
-	if fc.CommentMode == "post" {
+	if fc.CommentMode == "post" || fc.InlineCommentMode == "post" {
 		if _, _, e = commentRun(ctx, fc, s, id); e != nil {
 			return e
 		}

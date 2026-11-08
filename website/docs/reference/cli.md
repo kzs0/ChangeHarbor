@@ -26,7 +26,7 @@ Commands that read `changeharbor.yaml` accept `--config FILE` and
 | Command | Does |
 | --- | --- |
 | `reviewd review --url MR_OR_PR_URL` | Reviews a change captured from the forge API. Also `--model-config`/`--response` to override the configured model. |
-| `reviewd comment --run RUN_ID` | Creates or updates the owned summary comment (per `publish.comments`). |
+| `reviewd comment --run RUN_ID` | Creates or updates the owned summary comment (per `publish.comments`) and the inline comments on changed lines (per `publish.inline_comments`). |
 | `reviewd publish --run RUN_ID` | Approves, or reports would-approve/would-withhold (per `publish.approvals`). |
 | `reviewd revalidate [--repo NAME]` | Withdraws ChangeHarbor's approvals whose MR/PR head or target moved (GitLab unapprove, GitHub review dismissal). |
 | `reviewd serve --config FILE` | Runs the webhook service. See [Run the service](../guides/service.md). |

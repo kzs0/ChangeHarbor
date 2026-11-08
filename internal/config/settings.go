@@ -64,6 +64,8 @@ type PublishSettings struct {
 	Approvals   string `json:"approvals,omitempty"`
 	Comments    string `json:"comments,omitempty"`
 	Protections string `json:"protections,omitempty"`
+	// InlineComments posts one comment per anchored finding on its line.
+	InlineComments string `json:"inline_comments,omitempty"`
 }
 
 type GitLabSettings struct {
@@ -284,6 +286,10 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 		}
 		set("publish.comments", "shadow", &r.Publish.Comments)
 		if e := enum(p+".publish.comments", r.Publish.Comments, "off", "shadow", "post"); e != nil {
+			return e
+		}
+		set("publish.inline_comments", "shadow", &r.Publish.InlineComments)
+		if e := enum(p+".publish.inline_comments", r.Publish.InlineComments, "off", "shadow", "post"); e != nil {
 			return e
 		}
 		set("publish.protections", "required", &r.Publish.Protections)

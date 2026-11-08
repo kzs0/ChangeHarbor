@@ -320,3 +320,96 @@ func (c *Client) DismissReview(ctx context.Context, owner, repo string, number i
 	}
 	return e
 }
+
+// ReviewComment is an inline pull request review comment.
+type ReviewComment struct {
+	ID, Body, AuthorID, Path, Side string
+	Line                           int
+}
+
+// ReviewComments lists a pull request's inline review comments with bounded
+// pagination.
+func (c *Client) ReviewComments(ctx context.Context, owner, repo string, number, maxPages int) ([]ReviewComment, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return nil, e
+	}
+	if number <= 0 || maxPages <= 0 || maxPages > 1000 {
+		return nil, errors.New("invalid review comment request")
+	}
+	out := []ReviewComment{}
+	for page := 1; page <= maxPages; page++ {
+		var xs []struct {
+			ID   int64  `json:"id"`
+			Body string `json:"body"`
+			Path string `json:"path"`
+			Side string `json:"side"`
+			Line int    `json:"line"`
+			User struct {
+				ID int64 `json:"id"`
+			} `json:"user"`
+		}
+		if e = c.request(ctx, "GET", fmt.Sprintf("%s/pulls/%d/comments?per_page=100&page=%d", p, number, page), nil, &xs); e != nil {
+			return nil, e
+		}
+		for _, x := range xs {
+			if x.ID <= 0 || x.User.ID <= 0 {
+				return nil, errors.New("invalid review comment identity")
+			}
+			out = append(out, ReviewComment{ID: fmt.Sprint(x.ID), Body: x.Body, AuthorID: fmt.Sprint(x.User.ID), Path: x.Path, Side: x.Side, Line: x.Line})
+		}
+		if len(xs) < 100 {
+			return out, nil
+		}
+	}
+	return nil, errors.New("review comment pagination cap exceeded")
+}
+
+// NewReviewComment is one inline comment of a new review. Side is RIGHT
+// (added or context line) or LEFT (removed line).
+type NewReviewComment struct {
+	Path string
+	Line int
+	Side string
+	Body string
+}
+
+// CreateReviewComments posts all comments as one COMMENT review bound to the
+// reviewed commit, and returns the review's ID and author.
+func (c *Client) CreateReviewComments(ctx context.Context, owner, repo string, number int, commitID string, cs []NewReviewComment) (Comment, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return Comment{}, e
+	}
+	if number <= 0 || !oid.MatchString(commitID) || len(cs) == 0 {
+		return Comment{}, errors.New("invalid review request")
+	}
+	comments := make([]map[string]any, 0, len(cs))
+	for _, x := range cs {
+		if x.Path == "" || x.Line <= 0 || (x.Side != "RIGHT" && x.Side != "LEFT") || x.Body == "" {
+			return Comment{}, errors.New("invalid review comment")
+		}
+		comments = append(comments, map[string]any{"path": x.Path, "line": x.Line, "side": x.Side, "body": x.Body})
+	}
+	var w writtenComment
+	if e = c.request(ctx, "POST", fmt.Sprintf("%s/pulls/%d/reviews", p, number), map[string]any{"commit_id": commitID, "event": "COMMENT", "comments": comments}, &w); e != nil {
+		return Comment{}, rejection(e)
+	}
+	return w.comment()
+}
+
+// UpdateReviewComment replaces the body of an inline review comment.
+func (c *Client) UpdateReviewComment(ctx context.Context, owner, repo, id, body string) (Comment, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return Comment{}, e
+	}
+	if n, err := strconv.ParseInt(id, 10, 64); err != nil || n <= 0 || strconv.FormatInt(n, 10) != id || body == "" {
+		return Comment{}, errors.New("invalid review comment request")
+	}
+	var w writtenComment
+	if e = c.request(ctx, "PATCH", p+"/pulls/comments/"+id, map[string]string{"body": body}, &w); e != nil {
+		return Comment{}, rejection(e)
+	}
+	return w.comment()
+}

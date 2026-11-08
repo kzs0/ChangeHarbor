@@ -134,5 +134,14 @@ func validateAnchors(v model.Review, anchors []git.Anchor) error {
 			return fmt.Errorf("finding outside canonical changed lines")
 		}
 	}
+	changed := map[string]bool{}
+	for a := range known {
+		changed[a.Path] = true
+	}
+	for _, w := range v.Walkthrough {
+		if !changed[w.Path] {
+			return fmt.Errorf("walkthrough entry for unchanged file")
+		}
+	}
 	return nil
 }
