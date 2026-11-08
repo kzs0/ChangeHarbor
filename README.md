@@ -94,6 +94,26 @@ token acts as; required for `submit`), optional `token_scheme`
 to `project:<project_id>`. Mirrors must fetch
 `+refs/merge-requests/*/head:refs/merge-requests/*/head` and the target branch.
 
+`ci_trust` is required for GitLab approval: `external_config` (recommended)
+requires `ci_config_path` to load the pipeline from another project;
+`unchanged_config` withholds MRs that touch `.gitlab-ci.yml`, a local
+`ci_config_path` or any `ci_paths` glob. Optional `sync_remote` names a remote
+configured in the mirror; ChangeHarbor then fetches the target branch and MR
+head before reviewing and before every publication check.
+
+```sh
+bin/reviewd doctor --forge-config /trusted/forge.json      # read-only preflight
+bin/reviewd revalidate --forge-config /trusted/forge.json --state /data/reviewd
+```
+
+`doctor` checks token identity/scope/expiry, the bot's role, project merge and
+approval settings, branch protection, approval rules, CI trust and the mirror.
+`revalidate` withdraws ChangeHarbor approvals whose MR head or target moved
+since approval; `serve` runs it after each push to the target branch. With a
+`forge_config` in a `serve` repository mapping, MR webhooks run the whole flow
+(API-captured review, comment, publish) per that configuration's modes. One
+process may write a state directory at a time (`<state>/writer.lock`).
+
 Approval is submitted only when live GitLab facts establish: MR open, not draft
 and targeting the configured branch; pipelines must succeed with fast-forward,
 semi-linear or merged results pipelines; approvals reset on push; protected

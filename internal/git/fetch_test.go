@@ -89,3 +89,19 @@ func TestFetchDoesNotRunHooks(t *testing.T) {
 		t.Fatal("repository hook executed during fetch")
 	}
 }
+
+// A remote name must be configured in the mirror: git would otherwise treat a
+// name that matches a directory as a local repository path.
+func TestFetchRequiresConfiguredRemote(t *testing.T) {
+	mirror := t.TempDir()
+	gitIn(t, mirror, "init", "-b", "main")
+	shadow := filepath.Join(mirror, "lookalike")
+	os.Mkdir(shadow, 0700)
+	gitIn(t, shadow, "init", "-b", "main")
+	os.WriteFile(filepath.Join(shadow, "a"), []byte("x"), 0600)
+	gitIn(t, shadow, "add", "a")
+	gitIn(t, shadow, "commit", "-m", "x")
+	if e := (Reader{Repo: mirror}).Fetch(context.Background(), "lookalike", "+refs/heads/main:refs/heads/main"); e == nil {
+		t.Fatal("unconfigured remote name fetched as a local path")
+	}
+}

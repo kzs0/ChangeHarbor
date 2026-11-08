@@ -134,7 +134,7 @@ func (c *Client) CommitParents(ctx context.Context, projectID, sha string) ([]st
 
 type ProjectSettings struct {
 	PipelineMustSucceed, AllowSkippedPipeline, MergedResultsPipelines, MergeTrains bool
-	MergeMethod                                                                    string
+	MergeMethod, CIConfigPath                                                      string
 }
 
 func (c *Client) ProjectSettings(ctx context.Context, id string) (ProjectSettings, error) {
@@ -148,6 +148,7 @@ func (c *Client) ProjectSettings(ctx context.Context, id string) (ProjectSetting
 		MergeMethod            string `json:"merge_method"`
 		MergedResultsPipelines bool   `json:"merge_pipelines_enabled"`
 		MergeTrains            bool   `json:"merge_trains_enabled"`
+		CIConfigPath           string `json:"ci_config_path"`
 	}
 	if e := c.request(ctx, "GET", "/projects/"+id, nil, &x); e != nil {
 		return ProjectSettings{}, e
@@ -155,7 +156,7 @@ func (c *Client) ProjectSettings(ctx context.Context, id string) (ProjectSetting
 	if fmt.Sprint(x.ID) != id {
 		return ProjectSettings{}, errors.New("project identity mismatch")
 	}
-	return ProjectSettings{PipelineMustSucceed: x.PipelineMustSucceed, AllowSkippedPipeline: x.AllowSkipped, MergeMethod: x.MergeMethod, MergedResultsPipelines: x.MergedResultsPipelines, MergeTrains: x.MergeTrains}, nil
+	return ProjectSettings{PipelineMustSucceed: x.PipelineMustSucceed, AllowSkippedPipeline: x.AllowSkipped, MergeMethod: x.MergeMethod, MergedResultsPipelines: x.MergedResultsPipelines, MergeTrains: x.MergeTrains, CIConfigPath: x.CIConfigPath}, nil
 }
 
 type ApprovalSettings struct{ ResetOnPush, SelectiveCodeOwnerRemovals bool }
@@ -373,4 +374,29 @@ func (c *Client) UpdateNote(ctx context.Context, id string, number int, noteID, 
 		return Comment{}, noteRejection(e)
 	}
 	return x.comment()
+}
+
+// Unapprove withdraws the credential user's approval. GitLab answers 404 when
+// the user has not approved, which is treated as already withdrawn.
+func (c *Client) Unapprove(ctx context.Context, projectID string, number int) error {
+	if !numeric.MatchString(projectID) || number <= 0 {
+		return errors.New("invalid unapprove request")
+	}
+	e := c.request(ctx, "POST", fmt.Sprintf("/projects/%s/merge_requests/%d/unapprove", projectID, number), nil, nil)
+	if statusCode(e) == 404 {
+		return nil
+	}
+	return e
+}
+
+// ApprovedBy reports whether the user currently appears among the approvers.
+func (c *Client) ApprovedBy(ctx context.Context, projectID string, number int, userID string) (bool, error) {
+	if !numeric.MatchString(projectID) || number <= 0 || !numeric.MatchString(userID) {
+		return false, errors.New("invalid approvals request")
+	}
+	var x approvals
+	if e := c.request(ctx, "GET", fmt.Sprintf("/projects/%s/merge_requests/%d/approvals", projectID, number), nil, &x); e != nil {
+		return false, e
+	}
+	return x.has(userID), nil
 }

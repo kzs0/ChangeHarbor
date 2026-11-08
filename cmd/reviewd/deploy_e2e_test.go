@@ -304,8 +304,8 @@ func TestDoctorE2E(t *testing.T) {
 
 func TestDoctorMirrorCheck(t *testing.T) {
 	x := newGitLabFixture(t)
-	x.cfg.Branch = "missing"
-	x.writeConfig()
+	x.git("checkout", "-q", "--detach")
+	x.git("update-ref", "-d", "refs/heads/main")
 	code, d, _ := x.doctor()
 	ok := true
 	for _, c := range d.Checks {
@@ -369,8 +369,13 @@ func TestWebhookAutomationRejectsMismatchedRepository(t *testing.T) {
 	s := serverFor(x)
 	s.Repositories = map[string]repositoryConfig{"gitlab:9": {Path: x.repo, Branch: "main", ForgeConfig: x.config, Response: "../../testdata/review-response.json"}}
 	x.cfg.RepositoryID, x.cfg.ProjectID = "10", "10"
+	x.cfg.RequiredChecks = map[string]string{"test": "project:10"}
 	x.writeConfig()
-	if e := processEvent(context.Background(), s, jobs.Job{ID: "gitlab:delivery-1", Kind: "review"}, mrHook(x.head)); e == nil || len(x.fake.writes) != 0 {
+	if _, e := loadForgeConfig(x.config); e != nil {
+		t.Fatalf("fixture config must be valid so only the mapping disagrees: %v", e)
+	}
+	before := x.fake.requests
+	if e := processEvent(context.Background(), s, jobs.Job{ID: "gitlab:delivery-1", Kind: "review"}, mrHook(x.head)); e == nil || !strings.Contains(e.Error(), "does not match") || x.fake.requests != before {
 		t.Fatalf("mismatched mapping accepted: %v", e)
 	}
 }
@@ -399,4 +404,3 @@ func TestChangeURLRoundTrip(t *testing.T) {
 		}
 	}
 }
-

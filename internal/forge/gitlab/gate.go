@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
+
+	"github.com/kzs0/reviewd/internal/policy"
 )
 
 // Expect is what the host already established: the reviewed revisions, the
@@ -14,6 +17,12 @@ type Expect struct {
 	IID                                              int
 	Head, Target, MergeBase, TargetBranch, BotUserID string
 	RequiredJobs                                     map[string]string
+	// CI configuration trust: CITrust is "external_config" or
+	// "unchanged_config"; ProjectPath is the project's web path; ChangedPaths
+	// are the reviewed diff's old and new paths; CIPaths are extra globs that
+	// define job behaviour.
+	CITrust, ProjectPath  string
+	ChangedPaths, CIPaths []string
 }
 
 // Facts are live GitLab observations. Known flags separate "unavailable"
@@ -114,6 +123,9 @@ func Evaluate(f Facts, x Expect) (map[string]bool, string) {
 	case f.Branch.AllowForcePush:
 		return nil, "target branch allows force push"
 	}
+	if reason := ciTrust(f.Project.CIConfigPath, x); reason != "" {
+		return nil, reason
+	}
 	for _, r := range f.Rules {
 		if r.Approved || r.Required <= 0 {
 			continue
@@ -127,6 +139,9 @@ func Evaluate(f Facts, x Expect) (map[string]bool, string) {
 	p := f.Pipeline
 	if ch.HeadPipelineID == 0 || p == nil {
 		return nil, "merge request has no head pipeline"
+	}
+	if p.ProjectID != x.ProjectID && p.ProjectID == ch.SourceRepositoryID {
+		return nil, "head pipeline ran in the fork project and is not trusted; a maintainer must run the merge request pipeline in the parent project"
 	}
 	if p.ProjectID != x.ProjectID || !slices.Contains(trustedSources, p.Source) {
 		return nil, "head pipeline source or project is not trusted"
@@ -162,4 +177,42 @@ func Evaluate(f Facts, x Expect) (map[string]bool, string) {
 		passed[name] = true
 	}
 	return passed, ""
+}
+
+// ExternalCIConfig reports whether ci_config_path loads the pipeline
+// definition from a different project ("file@group/project[:ref]").
+func ExternalCIConfig(ciConfigPath, projectPath string) bool {
+	file, ref, ok := strings.Cut(ciConfigPath, "@")
+	if !ok || file == "" {
+		return false
+	}
+	project, _, _ := strings.Cut(ref, ":")
+	return project != "" && !strings.EqualFold(strings.Trim(project, "/"), strings.Trim(projectPath, "/"))
+}
+
+func ciTrust(ciConfigPath string, x Expect) string {
+	switch x.CITrust {
+	case "external_config":
+		if !ExternalCIConfig(ciConfigPath, x.ProjectPath) {
+			return "CI configuration is not loaded from a separate project (ci_config_path must be file@group/other-project)"
+		}
+		return ""
+	case "unchanged_config":
+		patterns := append([]string{".gitlab-ci.yml"}, x.CIPaths...)
+		if ciConfigPath != "" && !strings.Contains(ciConfigPath, "@") {
+			patterns = append(patterns, ciConfigPath)
+		}
+		for _, changed := range x.ChangedPaths {
+			for _, pattern := range patterns {
+				if ok, e := policy.Match(pattern, changed); e != nil || ok {
+					return fmt.Sprintf("merge request changes CI configuration (%s); human review required", changed)
+				}
+			}
+		}
+		return ""
+	case "":
+		return "CI configuration trust is not configured"
+	default:
+		return "unknown CI configuration trust mode"
+	}
 }

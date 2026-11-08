@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/kzs0/reviewd/internal/publish"
 	"github.com/kzs0/reviewd/internal/report"
 	"github.com/kzs0/reviewd/internal/review"
+	"github.com/kzs0/reviewd/internal/statelock"
 	"github.com/kzs0/reviewd/internal/storage"
 )
 
@@ -48,6 +51,12 @@ type forgeConfig struct {
 	BotUserID   string `json:"bot_user_id,omitempty"`
 	TokenScheme string `json:"token_scheme,omitempty"`
 	CommentMode string `json:"comment_mode,omitempty"`
+	// CITrust ("external_config" or "unchanged_config") and CIPaths decide
+	// whether the head pipeline's definition is trusted (GitLab). SyncRemote
+	// names a remote configured in the mirror to fetch from before use.
+	CITrust    string   `json:"ci_trust,omitempty"`
+	CIPaths    []string `json:"ci_paths,omitempty"`
+	SyncRemote string   `json:"sync_remote,omitempty"`
 }
 type forgeCapture struct {
 	Provider, RepositoryID, SourceRepositoryID, Head, Target, URL string
@@ -96,6 +105,23 @@ func loadForgeConfig(path string) (forgeConfig, error) {
 	if c.CommentMode == "post" && c.BotUserID == "" {
 		return c, errors.New("comment_mode post requires bot_user_id")
 	}
+	if c.CITrust != "" && c.CITrust != "external_config" && c.CITrust != "unchanged_config" {
+		return c, errors.New("ci_trust must be external_config or unchanged_config")
+	}
+	if len(c.CIPaths) > 0 && c.CITrust != "unchanged_config" {
+		return c, errors.New("ci_paths requires ci_trust unchanged_config")
+	}
+	for _, p := range c.CIPaths {
+		if _, e := policy.Match(p, "x"); p == "" || e != nil {
+			return c, errors.New("invalid ci_paths pattern")
+		}
+	}
+	if c.SyncRemote != "" && !remoteName.MatchString(c.SyncRemote) {
+		return c, errors.New("sync_remote must name a remote configured in the mirror")
+	}
+	if !branchName.MatchString(c.Branch) || strings.Contains(c.Branch, "..") {
+		return c, errors.New("invalid branch name")
+	}
 	if c.Provider == "gitlab" {
 		if c.ProjectID != c.RepositoryID {
 			return c, errors.New("GitLab project ID must equal repository ID")
@@ -118,7 +144,37 @@ func loadForgeConfig(path string) (forgeConfig, error) {
 	return c, nil
 }
 
-var numericID = regexp.MustCompile(`^[1-9][0-9]*$`)
+var (
+	numericID  = regexp.MustCompile(`^[1-9][0-9]*$`)
+	remoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	branchName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
+)
+
+// changeURL is the trusted web URL of a change, the inverse of forgeNumber.
+func changeURL(c forgeConfig, number int) string {
+	base := strings.TrimRight(c.WebBase, "/")
+	if c.Provider == "github" {
+		return fmt.Sprintf("%s/%s/%s/pull/%d", base, c.Owner, c.Repository, number)
+	}
+	return fmt.Sprintf("%s/%s/-/merge_requests/%d", base, strings.Trim(c.Repository, "/"), number)
+}
+
+// syncMirror fetches the target branch and the change head from the
+// configured mirror remote. It is a no-op without sync_remote.
+func syncMirror(ctx context.Context, c forgeConfig, number int) error {
+	if c.SyncRemote == "" {
+		return nil
+	}
+	head := fmt.Sprintf("+refs/merge-requests/%d/head:refs/merge-requests/%d/head", number, number)
+	if c.Provider == "github" {
+		head = fmt.Sprintf("+refs/pull/%d/head:refs/pull/%d/head", number, number)
+	}
+	branch := "+refs/heads/" + c.Branch + ":refs/heads/" + c.Branch
+	if e := (gitreader.Reader{Repo: c.RepoPath}).Fetch(ctx, c.SyncRemote, branch, head); e != nil {
+		return fmt.Errorf("mirror sync from %q failed: %w", c.SyncRemote, e)
+	}
+	return nil
+}
 
 func gitlabClient(c forgeConfig) *gl.Client {
 	token := os.Getenv(c.TokenEnv)
@@ -220,6 +276,7 @@ func fileDigest(path string) (string, error) {
 // switches and the bot identity can change without invalidating reviews.
 func forgeConfigDigest(c forgeConfig) string {
 	c.Mode, c.CommentMode, c.BotUserID = "", "", ""
+	c.CITrust, c.CIPaths, c.SyncRemote = "", nil, ""
 	return identityID(c)
 }
 func hostPolicyItem(minimum int, decision *policy.Decision, d gitreader.Diff, path string) (contextpack.Item, string, error) {
@@ -348,69 +405,9 @@ func forgeReviewCommand(ctx context.Context, args []string) (int, error) {
 	if *policyFile != "" && *policyFile != c.PolicyFile {
 		return 2, errors.New("policy must match trusted forge mapping")
 	}
-	if c.PolicyFile == "" {
-		return 2, errors.New("trusted forge policy is required")
-	}
-	captured, e := captureForge(ctx, c, *raw)
+	id, result, code, e := forgeReview(ctx, c, *raw, reviewOptions{State: *state, Response: *response, ModelConfig: *modelConfig, Minimum: *minimum, Threshold: *threshold, Cap: *cap})
 	if e != nil {
-		return 1, e
-	}
-	if e = requireMirrorObjects(ctx, c, captured); e != nil {
-		return 1, e
-	}
-	d, e := (gitreader.Reader{Repo: c.RepoPath}).Diff(ctx, captured.Target, captured.Head)
-	if e != nil {
-		return 1, e
-	}
-	floor, e := evaluateDiffPolicy(ctx, c.PolicyFile, d)
-	if e != nil {
-		return 2, e
-	}
-	*minimum = max(*minimum, floor.EnforcedMinimum)
-	*threshold = min(*threshold, floor.Threshold)
-	pd, e := fileDigest(c.PolicyFile)
-	if e != nil {
-		return 2, e
-	}
-	prov := forgeProvenance{Capture: captured, ConfigDigest: forgeConfigDigest(c), PolicyDigest: pd}
-	inputID := identityID(prov)
-	runID := identityID(struct {
-		Input string
-		At    int64
-	}{inputID, time.Now().UnixNano()})
-	m, close, e := modelFor(ctx, *modelConfig, *response, *state, runID)
-	if e != nil {
-		return 2, e
-	}
-	defer close()
-	items, e := reviewContext(ctx, *state, c.RepoPath, d.Head, d.Patch)
-	if e != nil {
-		return 1, e
-	}
-	b, _ := json.Marshal(prov)
-	items = append(items, contextpack.Item{ID: "forge_identity", Layer: "trusted_identity", Content: string(b), Required: true})
-	hostItem, _, e := hostPolicyItem(*minimum, &floor, d, c.PolicyFile)
-	if e != nil {
-		return 2, e
-	}
-	items = append(items, hostItem)
-	result, e := (review.Engine{Model: identityModel{m, inputID}}).Run(ctx, review.Input{Items: items, Limits: contextpack.Limits{MaxBytes: *cap, MaxTokens: *cap + 4096, ReserveTokens: 4096}, EvidenceIDs: []string{"diff", "forge_identity", "host_policy"}, Minimum: *minimum, Threshold: *threshold, Anchors: d.Anchors, RequirementsPass: false})
-	if e != nil {
-		return 1, e
-	}
-	id, e := saveRun(ctx, *state, "review", result)
-	if e != nil {
-		return 1, e
-	}
-	prov.PackageDigest = result.Package.Digest
-	s, e := storage.Open(*state)
-	if e != nil {
-		return 1, e
-	}
-	defer s.Close()
-	b, _ = json.Marshal(prov)
-	if e = s.Save(ctx, "review_provenance", id, b); e != nil {
-		return 1, e
+		return code, e
 	}
 	fmt.Fprintln(os.Stderr, "saved forge review:", id)
 	if e = emit(result); e != nil {
@@ -420,6 +417,85 @@ func forgeReviewCommand(ctx context.Context, args []string) (int, error) {
 		return 4, nil
 	}
 	return 0, nil
+}
+
+type reviewOptions struct {
+	State, Response, ModelConfig string
+	Minimum, Threshold, Cap      int
+}
+
+// forgeReview captures the change from the forge API, syncs the mirror,
+// reviews it and saves the run with its immutable provenance.
+func forgeReview(ctx context.Context, c forgeConfig, raw string, o reviewOptions) (string, review.Result, int, error) {
+	fail := func(code int, e error) (string, review.Result, int, error) { return "", review.Result{}, code, e }
+	if c.PolicyFile == "" {
+		return fail(2, errors.New("trusted forge policy is required"))
+	}
+	captured, e := captureForge(ctx, c, raw)
+	if e != nil {
+		return fail(1, e)
+	}
+	if e = syncMirror(ctx, c, captured.Number); e != nil {
+		return fail(1, e)
+	}
+	if e = requireMirrorObjects(ctx, c, captured); e != nil {
+		return fail(1, e)
+	}
+	d, e := (gitreader.Reader{Repo: c.RepoPath}).Diff(ctx, captured.Target, captured.Head)
+	if e != nil {
+		return fail(1, e)
+	}
+	floor, e := evaluateDiffPolicy(ctx, c.PolicyFile, d)
+	if e != nil {
+		return fail(2, e)
+	}
+	minimum := max(o.Minimum, floor.EnforcedMinimum)
+	threshold := min(o.Threshold, floor.Threshold)
+	pd, e := fileDigest(c.PolicyFile)
+	if e != nil {
+		return fail(2, e)
+	}
+	prov := forgeProvenance{Capture: captured, ConfigDigest: forgeConfigDigest(c), PolicyDigest: pd}
+	inputID := identityID(prov)
+	runID := identityID(struct {
+		Input string
+		At    int64
+	}{inputID, time.Now().UnixNano()})
+	m, close, e := modelFor(ctx, o.ModelConfig, o.Response, o.State, runID)
+	if e != nil {
+		return fail(2, e)
+	}
+	defer close()
+	items, e := reviewContext(ctx, o.State, c.RepoPath, d.Head, d.Patch)
+	if e != nil {
+		return fail(1, e)
+	}
+	b, _ := json.Marshal(prov)
+	items = append(items, contextpack.Item{ID: "forge_identity", Layer: "trusted_identity", Content: string(b), Required: true})
+	hostItem, _, e := hostPolicyItem(minimum, &floor, d, c.PolicyFile)
+	if e != nil {
+		return fail(2, e)
+	}
+	items = append(items, hostItem)
+	result, e := (review.Engine{Model: identityModel{m, inputID}}).Run(ctx, review.Input{Items: items, Limits: contextpack.Limits{MaxBytes: o.Cap, MaxTokens: o.Cap + 4096, ReserveTokens: 4096}, EvidenceIDs: []string{"diff", "forge_identity", "host_policy"}, Minimum: minimum, Threshold: threshold, Anchors: d.Anchors, RequirementsPass: false})
+	if e != nil {
+		return fail(1, e)
+	}
+	id, e := saveRun(ctx, o.State, "review", result)
+	if e != nil {
+		return fail(1, e)
+	}
+	prov.PackageDigest = result.Package.Digest
+	s, e := storage.Open(o.State)
+	if e != nil {
+		return fail(1, e)
+	}
+	defer s.Close()
+	b, _ = json.Marshal(prov)
+	if e = s.Save(ctx, "review_provenance", id, b); e != nil {
+		return fail(1, e)
+	}
+	return id, result, 0, nil
 }
 
 // publishCommand never upgrades a local advisory review to publication authority.
@@ -432,43 +508,67 @@ func publishCommand(ctx context.Context, args []string) (int, error) {
 	if f.Parse(args) != nil || *runID == "" || *config == "" || f.NArg() != 0 {
 		return 2, nil
 	}
-	c, e := loadForgeConfig(*config)
+	return withWriter(ctx, *config, *state, func(c forgeConfig, s *storage.Store) (any, int, error) {
+		return publishRun(ctx, c, s, *runID)
+	})
+}
+
+// withWriter loads trusted config, takes the single-writer state lock and
+// emits the inner command's output.
+func withWriter(ctx context.Context, config, state string, run func(forgeConfig, *storage.Store) (any, int, error)) (int, error) {
+	c, e := loadForgeConfig(config)
 	if e != nil {
 		return 2, e
 	}
-	s, e := storage.Open(*state)
+	release, e := statelock.Acquire(state)
+	if e != nil {
+		return 1, e
+	}
+	defer release()
+	s, e := storage.Open(state)
 	if e != nil {
 		return 1, e
 	}
 	defer s.Close()
-	b, e := s.Load(ctx, "run", *runID)
+	out, code, e := run(c, s)
+	if out != nil {
+		if ee := emit(out); ee != nil && e == nil {
+			return 1, ee
+		}
+	}
+	return code, e
+}
+
+// publishRun assumes the caller holds the state lock.
+func publishRun(ctx context.Context, c forgeConfig, s *storage.Store, runID string) (any, int, error) {
+	b, e := s.Load(ctx, "run", runID)
 	if e != nil {
-		return 1, e
+		return nil, 1, e
 	}
 	var r review.Result
 	if e = json.Unmarshal(b, &r); e != nil {
-		return 1, e
+		return nil, 1, e
 	}
 	if c.Mode == "" || c.Mode == "shadow" {
-		return 0, emit(publish.Publication{State: "shadow", Reason: "approval submission disabled"})
+		return publish.Publication{State: "shadow", Reason: "approval submission disabled"}, 0, nil
 	}
-	b, e = s.Load(ctx, "review_provenance", *runID)
+	b, e = s.Load(ctx, "review_provenance", runID)
 	if e != nil {
-		return 4, errors.New("review has no immutable forge provenance")
+		return nil, 4, errors.New("review has no immutable forge provenance")
 	}
 	var p forgeProvenance
 	if e = json.Unmarshal(b, &p); e != nil {
-		return 1, e
+		return nil, 1, e
 	}
 	if p.ConfigDigest != forgeConfigDigest(c) || p.PackageDigest != r.Package.Digest {
-		return 4, errors.New("trusted configuration or review package changed")
+		return nil, 4, errors.New("trusted configuration or review package changed")
 	}
 	pd, e := fileDigest(c.PolicyFile)
 	if e != nil {
-		return 2, e
+		return nil, 2, e
 	}
 	if pd != p.PolicyDigest {
-		return 4, errors.New("review policy changed")
+		return nil, 4, errors.New("review policy changed")
 	}
 	var remote interface {
 		publish.Remote
@@ -480,20 +580,22 @@ func publishCommand(ctx context.Context, args []string) (int, error) {
 		remote = &gitlabPublication{c: c, provenance: p, result: r}
 	}
 	service := publish.Service{Remote: remote, Audit: s}
-	out, e := service.Publish(ctx, *runID, publish.Request{Mode: "submit", ReviewedHead: p.Capture.Head, ReviewedTarget: p.Capture.Target, PolicyDigest: p.PolicyDigest, Eligible: r.Status == "completed" && r.Package.Complete})
+	out, e := service.Publish(ctx, runID, publish.Request{Mode: "submit", ReviewedHead: p.Capture.Head, ReviewedTarget: p.Capture.Target, PolicyDigest: p.PolicyDigest, Eligible: r.Status == "completed" && r.Package.Complete})
 	if e != nil {
-		return 1, e
+		return nil, 1, e
 	}
 	if out.State == "withheld" && out.RemoteID == "" && remote.withheldReason() != "" && !strings.HasPrefix(out.Reason, publish.ErrNotWritten.Error()) {
 		out.Reason = remote.withheldReason()
 	}
-	if e = emit(out); e != nil {
-		return 1, e
-	}
 	if out.State != "published" {
-		return 4, nil
+		return out, 4, nil
 	}
-	return 0, nil
+	if c.Provider == "gitlab" {
+		if e = recordActiveApproval(ctx, s, c, runID, p.Capture); e != nil {
+			return out, 1, e
+		}
+	}
+	return out, 0, nil
 }
 
 type githubPublication struct {
@@ -567,6 +669,9 @@ func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, e
 func localRevisions(ctx context.Context, cfg forgeConfig, reviewed, live forgeCapture) (gitreader.Diff, string, error) {
 	if live.Head != reviewed.Head || live.Target != reviewed.Target {
 		return gitreader.Diff{}, "reviewed HEAD or target changed", nil
+	}
+	if e := syncMirror(ctx, cfg, live.Number); e != nil {
+		return gitreader.Diff{}, "", e
 	}
 	if e := requireMirrorObjects(ctx, cfg, live); e != nil {
 		return gitreader.Diff{}, "", e
@@ -662,6 +767,14 @@ func (g *gitlabPublication) Refresh(ctx context.Context) (publish.Observation, e
 		return obs, e
 	}
 	expect.MergeBase = d.MergeBase
+	expect.CITrust, expect.CIPaths, expect.ProjectPath = g.c.CITrust, g.c.CIPaths, g.c.Repository
+	for _, f := range d.Files {
+		for _, p := range []string{f.OldPath, f.NewPath} {
+			if p != "" {
+				expect.ChangedPaths = append(expect.ChangedPaths, p)
+			}
+		}
+	}
 	passed, reason := gl.Evaluate(facts, expect)
 	if reason != "" {
 		g.reason = reason
@@ -689,58 +802,53 @@ func commentCommand(ctx context.Context, args []string) (int, error) {
 	if f.Parse(args) != nil || *runID == "" || *config == "" || f.NArg() != 0 {
 		return 2, nil
 	}
-	c, e := loadForgeConfig(*config)
+	return withWriter(ctx, *config, *state, func(c forgeConfig, s *storage.Store) (any, int, error) {
+		return commentRun(ctx, c, s, *runID)
+	})
+}
+
+// commentRun assumes the caller holds the state lock.
+func commentRun(ctx context.Context, c forgeConfig, s *storage.Store, runID string) (any, int, error) {
+	b, e := s.Load(ctx, "review_provenance", runID)
 	if e != nil {
-		return 2, e
-	}
-	s, e := storage.Open(*state)
-	if e != nil {
-		return 1, e
-	}
-	defer s.Close()
-	b, e := s.Load(ctx, "review_provenance", *runID)
-	if e != nil {
-		return 4, errors.New("review has no immutable forge provenance")
+		return nil, 4, errors.New("review has no immutable forge provenance")
 	}
 	var p forgeProvenance
 	if e = json.Unmarshal(b, &p); e != nil {
-		return 1, e
+		return nil, 1, e
 	}
-	if b, e = s.Load(ctx, "run", *runID); e != nil {
-		return 1, e
+	if b, e = s.Load(ctx, "run", runID); e != nil {
+		return nil, 1, e
 	}
 	var r review.Result
 	if e = json.Unmarshal(b, &r); e != nil {
-		return 1, e
+		return nil, 1, e
 	}
 	if p.ConfigDigest != forgeConfigDigest(c) || p.PackageDigest != r.Package.Digest {
-		return 4, errors.New("trusted configuration or review package changed")
+		return nil, 4, errors.New("trusted configuration or review package changed")
 	}
 	rendered, e := report.RenderReview(r)
 	if e != nil {
-		return 1, e
+		return nil, 1, e
 	}
 	key := fmt.Sprintf("%s:%s:%d", c.Provider, c.RepositoryID, p.Capture.Number)
-	body, e := publish.RenderComment(publish.CommentContent{ChangeKey: key, RunID: *runID, Head: p.Capture.Head, Status: r.Status,
+	body, e := publish.RenderComment(publish.CommentContent{ChangeKey: key, RunID: runID, Head: p.Capture.Head, Status: r.Status,
 		ModelRisk: r.Review.ModelMergeRisk, Minimum: r.Minimum, EffectiveRisk: r.EffectiveRisk, Threshold: r.Threshold, Report: rendered.Markdown})
 	if e != nil {
-		return 1, e
+		return nil, 1, e
 	}
 	if c.CommentMode != "post" {
-		return 0, emit(publish.CommentPublication{RunID: *runID, ChangeKey: key, State: "shadow", Reason: "comment posting disabled", Body: body})
+		return publish.CommentPublication{RunID: runID, ChangeKey: key, State: "shadow", Reason: "comment posting disabled", Body: body}, 0, nil
 	}
 	service := publish.CommentService{Remote: &forgeComments{c: c, provenance: p}, Audit: s}
-	out, e := service.Publish(ctx, publish.CommentRequest{RunID: *runID, ChangeKey: key, BotID: c.BotUserID, Body: body})
+	out, e := service.Publish(ctx, publish.CommentRequest{RunID: runID, ChangeKey: key, BotID: c.BotUserID, Body: body})
 	if e != nil {
-		return 1, e
-	}
-	if e = emit(out); e != nil {
-		return 1, e
+		return nil, 1, e
 	}
 	if out.State != "published" {
-		return 4, nil
+		return out, 4, nil
 	}
-	return 0, nil
+	return out, 0, nil
 }
 
 type forgeComments struct {
@@ -811,4 +919,167 @@ func commentWriteError(e error) error {
 		return fmt.Errorf("%w: %v", publish.ErrNotWritten, e)
 	}
 	return e
+}
+
+// activeApproval indexes a published GitLab approval for revalidationResult.
+type activeApproval struct {
+	RunID, Head, Target string
+}
+
+func approvalIndexKey(c forgeConfig) string { return c.Provider + ":" + c.RepositoryID }
+
+func recordActiveApproval(ctx context.Context, s *storage.Store, c forgeConfig, runID string, captured forgeCapture) error {
+	_, e := s.Update(ctx, "active_approvals", approvalIndexKey(c), func(old []byte, exists bool) ([]byte, error) {
+		index := map[int]activeApproval{}
+		if exists {
+			if e := json.Unmarshal(old, &index); e != nil {
+				return nil, e
+			}
+		}
+		index[captured.Number] = activeApproval{RunID: runID, Head: captured.Head, Target: captured.Target}
+		return json.Marshal(index)
+	})
+	return e
+}
+
+type revalidationResult struct {
+	Revoked, Dropped, Kept []int
+}
+
+func revalidateCommand(ctx context.Context, args []string) (int, error) {
+	f := flag.NewFlagSet("revalidate", flag.ContinueOnError)
+	config := f.String("forge-config", "", "trusted forge configuration")
+	state := f.String("state", ".reviewd", "state directory")
+	if f.Parse(args) != nil || *config == "" || f.NArg() != 0 {
+		return 2, nil
+	}
+	return withWriter(ctx, *config, *state, func(c forgeConfig, s *storage.Store) (any, int, error) {
+		r, e := revalidateRun(ctx, c, s)
+		if e != nil {
+			return r, 1, e
+		}
+		return r, 0, nil
+	})
+}
+
+// revalidateRun re-reads every indexed GitLab approval. Merged or closed MRs
+// are dropped; when the head or target moved the bot's approval is withdrawn
+// (idempotently) and the entry dropped; current approvals are kept. It
+// assumes the caller holds the state lock.
+func revalidateRun(ctx context.Context, c forgeConfig, s *storage.Store) (revalidationResult, error) {
+	out := revalidationResult{Revoked: []int{}, Dropped: []int{}, Kept: []int{}}
+	if c.Provider != "gitlab" {
+		return out, errors.New("approval revalidationResult is supported for GitLab")
+	}
+	b, e := s.Load(ctx, "active_approvals", approvalIndexKey(c))
+	if errors.Is(e, sql.ErrNoRows) {
+		return out, nil
+	}
+	if e != nil {
+		return out, e
+	}
+	index := map[int]activeApproval{}
+	if e = json.Unmarshal(b, &index); e != nil {
+		return out, e
+	}
+	numbers := make([]int, 0, len(index))
+	for n := range index {
+		numbers = append(numbers, n)
+	}
+	slices.Sort(numbers)
+	client := gitlabClient(c)
+	var errs []error
+	done := map[int]bool{}
+	for _, n := range numbers {
+		a := index[n]
+		ch, err := client.Change(ctx, c.ProjectID, n)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("merge request %d: %w", n, err))
+			continue
+		}
+		switch {
+		case ch.State != "opened":
+			out.Dropped = append(out.Dropped, n)
+			done[n] = true
+		case ch.HeadOID != a.Head || ch.TargetOID != a.Target:
+			approved, err := client.ApprovedBy(ctx, c.ProjectID, n, c.BotUserID)
+			if err == nil && approved {
+				err = client.Unapprove(ctx, c.ProjectID, n)
+			}
+			if err != nil {
+				errs = append(errs, fmt.Errorf("merge request %d: %w", n, err))
+				continue
+			}
+			out.Revoked = append(out.Revoked, n)
+			done[n] = true
+		default:
+			out.Kept = append(out.Kept, n)
+		}
+	}
+	if len(done) > 0 {
+		if _, e = s.Update(ctx, "active_approvals", approvalIndexKey(c), func(old []byte, exists bool) ([]byte, error) {
+			current := map[int]activeApproval{}
+			if exists {
+				if e := json.Unmarshal(old, &current); e != nil {
+					return nil, e
+				}
+			}
+			for n := range done {
+				// Keep entries re-approved for a newer run since we read them.
+				if current[n] == index[n] {
+					delete(current, n)
+				}
+			}
+			return json.Marshal(current)
+		}); e != nil {
+			return out, e
+		}
+	}
+	return out, errors.Join(errs...)
+}
+
+type doctorReport struct {
+	OK     bool
+	Checks []gl.Check
+}
+
+// doctorCommand is a read-only GitLab deployment preflight. It does not take
+// the state lock so it can run beside the service.
+func doctorCommand(ctx context.Context, args []string) (int, error) {
+	f := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	config := f.String("forge-config", "", "trusted forge configuration")
+	if f.Parse(args) != nil || *config == "" || f.NArg() != 0 {
+		return 2, nil
+	}
+	c, e := loadForgeConfig(*config)
+	if e != nil {
+		return 2, e
+	}
+	if c.Provider != "gitlab" {
+		return 2, errors.New("doctor supports GitLab forge configurations")
+	}
+	checks, e := gitlabClient(c).Diagnose(ctx, gl.DiagnoseInput{ProjectID: c.ProjectID, ProjectPath: c.Repository, Branch: c.Branch, BotUserID: c.BotUserID, CITrust: c.CITrust})
+	if e != nil {
+		return 1, e
+	}
+	mirror := gl.Check{Name: "mirror", OK: true, Detail: "branch " + c.Branch + " resolves in " + c.RepoPath}
+	if c.SyncRemote != "" {
+		if err := (gitreader.Reader{Repo: c.RepoPath}).Fetch(ctx, c.SyncRemote, "+refs/heads/"+c.Branch+":refs/heads/"+c.Branch); err != nil {
+			mirror = gl.Check{Name: "mirror", Severity: "error", Detail: "sync from " + c.SyncRemote + " failed: " + err.Error()}
+		}
+	}
+	if mirror.OK {
+		if _, err := (gitreader.Reader{Repo: c.RepoPath}).Resolve(ctx, c.Branch); err != nil {
+			mirror = gl.Check{Name: "mirror", Severity: "error", Detail: "branch " + c.Branch + " does not resolve in " + c.RepoPath}
+		}
+	}
+	checks = append(checks, mirror)
+	report := doctorReport{OK: !gl.Failed(checks), Checks: checks}
+	if e = emit(report); e != nil {
+		return 1, e
+	}
+	if !report.OK {
+		return 4, nil
+	}
+	return 0, nil
 }
