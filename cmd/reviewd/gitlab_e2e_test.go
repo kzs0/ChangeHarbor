@@ -45,6 +45,7 @@ type fakeGitLab struct {
 	approvalsBody string
 
 	approveSHAs []string
+	extra       func(http.ResponseWriter, *http.Request) bool // optional additional routes
 	writes      []string
 	requests    int
 	auth        []string
@@ -71,6 +72,9 @@ func (f *fakeGitLab) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.auth = append(f.auth, r.Header.Get("Private-Token")+"|"+r.Header.Get("Authorization"))
 	if r.Method != http.MethodGet {
 		f.writes = append(f.writes, r.Method+" "+r.URL.EscapedPath())
+	}
+	if f.extra != nil && f.extra(w, r) {
+		return
 	}
 	reply := func(code int, s string) { w.WriteHeader(code); io.WriteString(w, s) }
 	js := func(v any) string { b, _ := json.Marshal(v); return string(b) }

@@ -1,4 +1,44 @@
 package github
-import("context";"net/http";"net/http/httptest";"testing")
-func TestPinnedChange(t *testing.T){for _,tc:=range []struct{name,body string;status int;cap int64;ok bool}{{"valid",`{"id":7,"head":{"sha":"abc123","repo":{"id":12}},"base":{"sha":"def456","repo":{"id":11}}}`,200,4096,true},{"missing fork identity",`{"id":7,"head":{"sha":"abc123"},"base":{"sha":"def456","repo":{"id":11}}}`,200,4096,false},{"http failure",`{}`,403,4096,false},{"body limit",`{"id":7,"head":{"sha":"abc123","repo":{"id":12}},"base":{"sha":"def456","repo":{"id":11}}}`,200,16,false}}{t.Run(tc.name,func(t *testing.T){s:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){if r.URL.Path!="/repos/o/r/pulls/7"{t.Errorf("path %s",r.URL.Path)};w.WriteHeader(tc.status);w.Write([]byte(tc.body))}));defer s.Close();c:=NewClient(s.URL,"",s.Client(),tc.cap);got,e:=c.Change(context.Background(),"o","r",7);if (e==nil)!=tc.ok{t.Fatalf("%#v %v",got,e)};if tc.ok&&(got.HeadOID!="abc123"||got.TargetOID!="def456"||got.RepositoryID!="11"||got.SourceRepositoryID!="12"){t.Fatalf("identity %#v",got)}})}}
-func TestTrustedCheck(t *testing.T){for _,c:=range []Check{{Name:"ci",Producer:"trusted",OID:"abc",Conclusion:"success"},{Name:"ci",Producer:"attacker",OID:"abc",Conclusion:"success"},{Name:"ci",Producer:"trusted",OID:"old",Conclusion:"success"},{Name:"ci",Producer:"trusted",OID:"abc",Conclusion:"pending"}}{want:=c.Producer=="trusted"&&c.OID=="abc"&&c.Conclusion=="success";if TrustedCheck(c,"trusted","abc")!=want{t.Fatalf("trusted check %#v",c)}}}
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestPinnedChange(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		status     int
+		cap        int64
+		ok         bool
+	}{{"valid", `{"id":7,"head":{"sha":"abc123","repo":{"id":12}},"base":{"sha":"def456","repo":{"id":11}}}`, 200, 4096, true}, {"missing fork identity", `{"id":7,"head":{"sha":"abc123"},"base":{"sha":"def456","repo":{"id":11}}}`, 200, 4096, false}, {"http failure", `{}`, 403, 4096, false}, {"body limit", `{"id":7,"head":{"sha":"abc123","repo":{"id":12}},"base":{"sha":"def456","repo":{"id":11}}}`, 200, 16, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/repos/o/r/pulls/7" {
+					t.Errorf("path %s", r.URL.Path)
+				}
+				w.WriteHeader(tc.status)
+				w.Write([]byte(tc.body))
+			}))
+			defer s.Close()
+			c := NewClient(s.URL, "", s.Client(), tc.cap)
+			got, e := c.Change(context.Background(), "o", "r", 7)
+			if (e == nil) != tc.ok {
+				t.Fatalf("%#v %v", got, e)
+			}
+			if tc.ok && (got.HeadOID != "abc123" || got.TargetOID != "def456" || got.RepositoryID != "11" || got.SourceRepositoryID != "12") {
+				t.Fatalf("identity %#v", got)
+			}
+		})
+	}
+}
+func TestTrustedCheck(t *testing.T) {
+	for _, c := range []Check{{Name: "ci", Producer: "trusted", OID: "abc", Conclusion: "success"}, {Name: "ci", Producer: "attacker", OID: "abc", Conclusion: "success"}, {Name: "ci", Producer: "trusted", OID: "old", Conclusion: "success"}, {Name: "ci", Producer: "trusted", OID: "abc", Conclusion: "pending"}} {
+		want := c.Producer == "trusted" && c.OID == "abc" && c.Conclusion == "success"
+		if TrustedCheck(c, "trusted", "abc") != want {
+			t.Fatalf("trusted check %#v", c)
+		}
+	}
+}
