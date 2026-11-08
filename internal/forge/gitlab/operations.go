@@ -344,7 +344,8 @@ func (w writtenNote) comment() (Comment, error) {
 
 func noteRejection(e error) error {
 	switch statusCode(e) {
-	case 401, 403, 404, 422:
+	case 400, 401, 403, 404, 422:
+		// 400 is GitLab's answer to an invalid note or diff position: refused.
 		return fmt.Errorf("%w: status %d", ErrRejected, statusCode(e))
 	}
 	return e
@@ -468,6 +469,44 @@ func (c *Client) Discussions(ctx context.Context, id string, number, maxPages in
 		}
 	}
 	return nil, errors.New("discussion pagination cap exceeded")
+}
+
+// FileDiff is one file of GitLab's merge request diff, with its path on each
+// side. Diff positions must use these paths.
+type FileDiff struct {
+	OldPath, NewPath                  string
+	NewFile, DeletedFile, RenamedFile bool
+}
+
+// MergeRequestDiffs lists the files of the merge request diff with bounded
+// pagination.
+func (c *Client) MergeRequestDiffs(ctx context.Context, id string, number, maxPages int) ([]FileDiff, error) {
+	if !numeric.MatchString(id) || number <= 0 || maxPages <= 0 || maxPages > 1000 {
+		return nil, errors.New("invalid diffs request")
+	}
+	out := []FileDiff{}
+	for page := 1; page <= maxPages; page++ {
+		var xs []struct {
+			OldPath     string `json:"old_path"`
+			NewPath     string `json:"new_path"`
+			NewFile     bool   `json:"new_file"`
+			DeletedFile bool   `json:"deleted_file"`
+			RenamedFile bool   `json:"renamed_file"`
+		}
+		if e := c.request(ctx, "GET", fmt.Sprintf("/projects/%s/merge_requests/%d/diffs?per_page=100&page=%d", id, number, page), nil, &xs); e != nil {
+			return nil, e
+		}
+		for _, x := range xs {
+			if x.OldPath == "" || x.NewPath == "" {
+				return nil, errors.New("invalid diff file paths")
+			}
+			out = append(out, FileDiff{OldPath: x.OldPath, NewPath: x.NewPath, NewFile: x.NewFile, DeletedFile: x.DeletedFile, RenamedFile: x.RenamedFile})
+		}
+		if len(xs) < 100 {
+			return out, nil
+		}
+	}
+	return nil, errors.New("diff pagination cap exceeded")
 }
 
 // Position pins a discussion to one line of the merge request diff. Exactly

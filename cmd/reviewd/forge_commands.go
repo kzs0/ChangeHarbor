@@ -964,11 +964,20 @@ func inlineComments(ctx context.Context, c forgeConfig, s *storage.Store, runID,
 		}
 		return publish.InlinePublication{RunID: runID, ChangeKey: key, State: "shadow", Reason: "inline comment posting disabled", Planned: targets}, 0, nil
 	}
+	var skipped []string
+	if c.Provider == "gitlab" {
+		diffs, e := gitlabClient(c).MergeRequestDiffs(ctx, c.ProjectID, p.Capture.Number, 20)
+		if e != nil {
+			return publish.InlinePublication{}, 1, e
+		}
+		targets, skipped = gitlabPositionPaths(targets, diffs)
+	}
 	service := publish.InlineService{Remote: &forgeInline{forgeComments{c: c, provenance: p}}, Audit: s}
-	out, e := service.Publish(ctx, publish.InlineRequest{RunID: runID, ChangeKey: key, BotID: c.BotUserID, Targets: targets})
+	out, e := service.Publish(ctx, publish.InlineRequest{RunID: runID, ChangeKey: key, BotID: c.BotUserID, Targets: targets, Present: skipped})
 	if e != nil {
 		return publish.InlinePublication{}, 1, e
 	}
+	out.Skipped = skipped
 	if out.State != "published" {
 		return out, 4, nil
 	}
@@ -1020,7 +1029,7 @@ func (f *forgeInline) CreateInline(ctx context.Context, ts []publish.InlineTarge
 	}
 	var last publish.InlineComment
 	for _, t := range ts {
-		pos := gl.Position{BaseSHA: ch.MergeBaseOID, StartSHA: ch.StartOID, HeadSHA: head, OldPath: t.Path, NewPath: t.Path}
+		pos := gl.Position{BaseSHA: ch.MergeBaseOID, StartSHA: ch.StartOID, HeadSHA: head, OldPath: t.OldPath, NewPath: t.NewPath}
 		if t.Side == "old" {
 			pos.OldLine = t.Line
 		} else {
@@ -1326,4 +1335,32 @@ func doctorRun(ctx context.Context, c forgeConfig) (doctorReport, error) {
 	}
 	checks = append(checks, mirror)
 	return doctorReport{OK: !gl.Failed(checks), Checks: checks}, nil
+}
+
+// gitlabPositionPaths fills each target's old and new path from GitLab's own
+// merge request diff, so renamed files get valid positions. A target GitLab's
+// diff can't place (an old-side line of a new file, a new-side line of a
+// deleted file, or a path GitLab doesn't list) is skipped: it stays in the
+// summary comment, and doesn't block the other inline comments.
+func gitlabPositionPaths(targets []publish.InlineTarget, diffs []gl.FileDiff) ([]publish.InlineTarget, []string) {
+	var out []publish.InlineTarget
+	var skipped []string
+	for _, t := range targets {
+		placed := false
+		for _, d := range diffs {
+			if t.Side == "old" && d.OldPath == t.Path && !d.NewFile || t.Side != "old" && d.NewPath == t.Path && !d.DeletedFile {
+				t.OldPath, t.NewPath, placed = d.OldPath, d.NewPath, true
+				break
+			}
+		}
+		if placed {
+			out = append(out, t)
+		} else {
+			skipped = append(skipped, t.Fingerprint)
+		}
+	}
+	if out == nil {
+		out = []publish.InlineTarget{}
+	}
+	return out, skipped
 }

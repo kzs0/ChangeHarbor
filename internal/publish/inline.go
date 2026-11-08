@@ -89,9 +89,14 @@ func RenderInline(c InlineContent) (string, error) {
 	}
 }
 
+// lf normalises CRLF line endings, which a forge may store bodies with, so
+// marking stays idempotent and reversible.
+func lf(body string) string { return strings.ReplaceAll(body, "\r\n", "\n") }
+
 // MarkOutdated prefixes the outdated marker and a visible notice. It is
 // idempotent and UnmarkOutdated reverses it exactly.
 func MarkOutdated(body string) string {
+	body = lf(body)
 	if strings.HasPrefix(body, OutdatedMarker+"\n") {
 		return body
 	}
@@ -100,6 +105,7 @@ func MarkOutdated(body string) string {
 
 // UnmarkOutdated removes the marking added by MarkOutdated.
 func UnmarkOutdated(body string) string {
+	body = lf(body)
 	if rest, ok := strings.CutPrefix(body, OutdatedMarker+"\n"+outdatedNotice+"\n\n"); ok {
 		return rest
 	}
@@ -117,6 +123,9 @@ type InlineTarget struct {
 	Fingerprint, Path, Side string
 	Line                    int
 	Body                    string
+	// OldPath and NewPath are the file's paths on each side of the forge's
+	// diff, when the forge needs both (GitLab positions).
+	OldPath, NewPath string `json:",omitempty"`
 }
 
 // InlineTargets turns anchored findings into inline comments. Findings
@@ -241,6 +250,9 @@ type InlineRemote interface {
 type InlineRequest struct {
 	RunID, ChangeKey, BotID string
 	Targets                 []InlineTarget
+	// Present lists fingerprints the review still reports but that can't be
+	// placed on the forge's diff: their existing comments are not outdated.
+	Present []string
 }
 
 // InlinePublication is the audited result. Created, Kept, MarkedOutdated and
@@ -249,6 +261,7 @@ type InlinePublication struct {
 	RunID, ChangeKey, BotID, TargetsDigest  string
 	State, Reason                           string
 	Created, Kept, MarkedOutdated, Unmarked []string
+	Skipped                                 []string       `json:",omitempty"`
 	Planned                                 []InlineTarget `json:",omitempty"`
 }
 
@@ -319,6 +332,20 @@ func (s *InlineService) Publish(ctx context.Context, r InlineRequest) (InlinePub
 		return p, e
 	}
 	plan := PlanInline(r.ChangeKey, r.BotID, r.Targets, existing)
+	if len(r.Present) > 0 {
+		present := map[string]bool{}
+		for _, fp := range r.Present {
+			present[fp] = true
+		}
+		var mark []InlineComment
+		var markFP []string
+		for i, c := range plan.MarkOutdated {
+			if !present[plan.markedFP[i]] {
+				mark, markFP = append(mark, c), append(markFP, plan.markedFP[i])
+			}
+		}
+		plan.MarkOutdated, plan.markedFP = mark, markFP
+	}
 	p.Kept = append(p.Kept, plan.keptFP...)
 	save := func(state string) error {
 		p.State = state

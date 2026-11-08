@@ -1,6 +1,7 @@
 package publish
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -30,5 +31,20 @@ func TestPlanUnmarksCRLFOutdatedComment(t *testing.T) {
 	p := PlanInline(key, "5", ts, existing)
 	if len(p.Unmark) != 1 || isOutdated(p.Unmark[0].Body) || strings.Contains(p.Unmark[0].Body, OutdatedMarker) {
 		t.Fatalf("plan %+v", p)
+	}
+}
+
+// A finding still reported but not placeable on the forge's diff keeps its
+// existing comment as is: it must not be marked outdated.
+func TestPresentButUnplaceableFindingIsNotOutdated(t *testing.T) {
+	r := &inlineRemote{}
+	s := &InlineService{Remote: r, Audit: &audit{map[string][]byte{}}}
+	a, b := finding("alpha", 1, "new"), finding("beta", 1, "old")
+	s.Publish(context.Background(), inlineRequest(t, "run1", a, b))
+	req := inlineRequest(t, "run2", a)
+	req.Present = []string{FindingFingerprint(b)}
+	out, e := s.Publish(context.Background(), req)
+	if e != nil || len(out.MarkedOutdated) != 0 || r.updates != 0 {
+		t.Fatalf("present finding marked outdated: %+v %v updates %d", out, e, r.updates)
 	}
 }
