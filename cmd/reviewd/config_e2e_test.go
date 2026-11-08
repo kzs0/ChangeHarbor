@@ -1,6 +1,6 @@
 package main
 
-// End-to-end tests for the unified configuration: one reviewd.json plus a
+// End-to-end tests for the unified configuration: one changeharbor.yaml plus a
 // resolved lock file drive review, publish, comment, revalidate, doctor and
 // serve without per-command forge files.
 
@@ -17,6 +17,7 @@ import (
 
 	"github.com/kzs0/reviewd/internal/config"
 	"github.com/kzs0/reviewd/internal/jobs"
+	"go.yaml.in/yaml/v3"
 )
 
 const mrURL = "https://gitlab.example/group/app/-/merge_requests/7"
@@ -31,8 +32,11 @@ func (u *unified) repo() map[string]any {
 	return u.doc["repositories"].(map[string]any)["app"].(map[string]any)
 }
 func (u *unified) write() {
-	b, _ := json.MarshalIndent(u.doc, "", "  ")
-	if e := os.WriteFile(u.path, b, 0600); e != nil {
+	b, e := yaml.Marshal(u.doc)
+	if e != nil {
+		u.t.Fatal(e)
+	}
+	if e := os.WriteFile(u.path, append([]byte("# changeharbor.yaml\n"), b...), 0600); e != nil {
 		u.t.Fatal(e)
 	}
 }
@@ -55,7 +59,7 @@ func (u *unified) review() string {
 	return m[1]
 }
 
-// newUnified writes reviewd.json next to the fixture's policy with relative
+// newUnified writes changeharbor.yaml next to the fixture's policy with relative
 // paths, using the fake GitLab as api_url.
 func newUnified(t *testing.T, publish map[string]any) *unified {
 	x := newGitLabFixture(t)
@@ -65,7 +69,7 @@ func newUnified(t *testing.T, publish map[string]any) *unified {
 	if publish != nil {
 		repo["publish"] = publish
 	}
-	u := &unified{gitlabFixture: x, path: filepath.Join(x.dir, "reviewd.json"), doc: map[string]any{"version": 1, "state": "state", "repositories": map[string]any{"app": repo}}}
+	u := &unified{gitlabFixture: x, path: filepath.Join(x.dir, "changeharbor.yaml"), doc: map[string]any{"version": 1, "state": "state", "repositories": map[string]any{"app": repo}}}
 	u.write()
 	return u
 }
@@ -167,16 +171,16 @@ func TestUnifiedUnknownURLIsRejected(t *testing.T) {
 func TestConfigLocationPrecedence(t *testing.T) {
 	u := newUnified(t, nil)
 	u.resolve()
-	t.Setenv("REVIEWD_CONFIG", u.path)
+	t.Setenv("CHANGEHARBOR_CONFIG", u.path)
 	code, _, stderr := runCLI(t, "review", "--url", mrURL)
 	if code != 0 {
-		t.Fatalf("REVIEWD_CONFIG not used: %d %s", code, stderr)
+		t.Fatalf("CHANGEHARBOR_CONFIG not used: %d %s", code, stderr)
 	}
 	envState := filepath.Join(u.dir, "env-state")
-	t.Setenv("REVIEWD_STATE", envState)
+	t.Setenv("CHANGEHARBOR_STATE", envState)
 	code, out, _ := runCLI(t, "config", "check")
 	if code != 0 || !strings.Contains(out, envState) || !strings.Contains(out, `"state": "env"`) {
-		t.Fatalf("REVIEWD_STATE not applied: %d %s", code, out)
+		t.Fatalf("CHANGEHARBOR_STATE not applied: %d %s", code, out)
 	}
 	flagState := filepath.Join(u.dir, "flag-state")
 	code, out, _ = runCLI(t, "config", "check", "--state", flagState)
@@ -263,7 +267,7 @@ func TestMigrateKeepsExistingReviewsValid(t *testing.T) {
 	if code != 0 || m == nil || !strings.Contains(stderr, "deprecated") {
 		t.Fatalf("legacy review %d %s", code, stderr)
 	}
-	out := filepath.Join(x.dir, "reviewd.json")
+	out := filepath.Join(x.dir, "changeharbor.yaml")
 	if code, _, stderr := runCLI(t, "config", "migrate", "--forge-config", x.config, "--state", x.state, "--output", out); code != 0 {
 		t.Fatalf("migrate %d %s", code, stderr)
 	}
@@ -284,20 +288,25 @@ func TestMigrateKeepsExistingReviewsValid(t *testing.T) {
 
 func TestConfigInitWritesStarterFiles(t *testing.T) {
 	x := newGitLabFixture(t)
-	path := filepath.Join(x.dir, "reviewd.json")
+	path := filepath.Join(x.dir, "changeharbor.yaml")
 	args := []string{"config", "init", "--config", path, "--url", "https://gitlab.example/group/app", "--provider", "gitlab", "--api-url", x.srv.URL, "--mirror", x.repo, "--policy", x.policy, "--token-env", "GL_TOKEN"}
 	code, out, stderr := runCLI(t, args...)
 	if code != 0 {
 		t.Fatalf("init %d %s %s", code, out, stderr)
 	}
-	for _, f := range []string{"reviewd.json", "reviewd.schema.json", "reviewd.lock.json"} {
+	for _, f := range []string{"changeharbor.yaml", "changeharbor.schema.json", "changeharbor.lock.yaml"} {
 		if _, e := os.Stat(filepath.Join(x.dir, f)); e != nil {
 			t.Fatalf("%s missing", f)
 		}
 	}
 	b, _ := os.ReadFile(path)
-	if !strings.Contains(string(b), `"$schema": "reviewd.schema.json"`) || strings.Contains(string(b), `"approvals": "submit"`) {
-		t.Fatalf("starter config %s", b)
+	if !strings.HasPrefix(string(b), "# yaml-language-server: $schema=changeharbor.schema.json") || !strings.Contains(string(b), "#   approvals: submit") {
+		t.Fatalf("starter config lacks schema modeline or commented guidance:\n%s", b)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "approvals: submit" || strings.TrimSpace(line) == "comments: post" {
+			t.Fatalf("starter config enables writes:\n%s", b)
+		}
 	}
 	if code, _, _ := runCLI(t, "config", "check", "--config", path); code != 0 {
 		t.Fatal("starter config does not check")
@@ -358,7 +367,7 @@ func TestUnifiedGitHubBotOverrideAndRequiredChecks(t *testing.T) {
 		w.WriteHeader(404)
 	}))
 	defer srv.Close()
-	path := filepath.Join(x.dir, "reviewd.json")
+	path := filepath.Join(x.dir, "changeharbor.yaml")
 	os.WriteFile(path, []byte(fmt.Sprintf(`{"version":1,"repositories":{"svc":{"url":"https://github.com/owner/repo","api_url":%q,"token_env":"GL_TOKEN","bot_user_id":"77","mirror":{"path":%q},"policy":%q,"response":"r.json","publish":{"comments":"post"},"github":{"required_checks":{"ci":"42"}}}}}`, srv.URL, x.repo, x.policy)), 0600)
 	if code, _, stderr := runCLI(t, "config", "resolve", "--config", path); code != 0 {
 		t.Fatalf("%d %s", code, stderr)
@@ -372,5 +381,29 @@ func TestUnifiedGitHubBotOverrideAndRequiredChecks(t *testing.T) {
 	json.Unmarshal([]byte(out), &c)
 	if code != 0 || fmt.Sprint(c.Repositories["svc"].Effective["required_checks"]) != "map[ci:42]" {
 		t.Fatalf("%d %s", code, out)
+	}
+}
+
+func TestDefaultConfigPathIsChangeharborYAML(t *testing.T) {
+	u := newUnified(t, nil)
+	u.resolve()
+	t.Chdir(u.dir)
+	if code, _, stderr := runCLI(t, "config", "check"); code != 0 {
+		t.Fatalf("./changeharbor.yaml not found by default: %d %s", code, stderr)
+	}
+	if _, e := os.Stat(filepath.Join(u.dir, "changeharbor.lock.yaml")); e != nil {
+		t.Fatalf("lock not written as changeharbor.lock.yaml: %v", e)
+	}
+}
+
+func TestMigrateWritesYAML(t *testing.T) {
+	x := newGitLabFixture(t)
+	out := filepath.Join(x.dir, "changeharbor.yaml")
+	if code, _, stderr := runCLI(t, "config", "migrate", "--forge-config", x.config, "--output", out); code != 0 {
+		t.Fatalf("%d %s", code, stderr)
+	}
+	b, _ := os.ReadFile(out)
+	if strings.HasPrefix(strings.TrimSpace(string(b)), "{") || !strings.Contains(string(b), "repositories:") {
+		t.Fatalf("migrate did not write YAML:\n%s", b)
 	}
 }
