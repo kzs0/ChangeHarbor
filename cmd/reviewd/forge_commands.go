@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kzs0/reviewd/internal/config"
 	"github.com/kzs0/reviewd/internal/contextpack"
 	gh "github.com/kzs0/reviewd/internal/forge/github"
 	gl "github.com/kzs0/reviewd/internal/forge/gitlab"
@@ -53,6 +54,16 @@ type forgeConfig struct {
 	CommentMode string `json:"comment_mode,omitempty"`
 	// InlineCommentMode is "" (render the plan only), "off" or "post".
 	InlineCommentMode string `json:"inline_comment_mode,omitempty"`
+	// Suggestions is "" or "include" (committable suggestions in inline
+	// comments) or "off". InlineMinSeverity is the lowest severity posted
+	// inline ("" means low).
+	Suggestions       string `json:"suggestions,omitempty"`
+	InlineMinSeverity string `json:"inline_min_severity,omitempty"`
+	// Trusted review guidance and path filters. They change the model's
+	// input, so they are part of the review identity.
+	Instructions     string            `json:"instructions,omitempty"`
+	PathInstructions []pathInstruction `json:"path_instructions,omitempty"`
+	Exclude          []string          `json:"exclude,omitempty"`
 	// CITrust ("external_config" or "unchanged_config") and CIPaths decide
 	// whether the head pipeline's definition is trusted (GitLab). SyncRemote
 	// names a remote configured in the mirror to fetch from before use.
@@ -67,6 +78,12 @@ type forgeConfig struct {
 	name, response, modelConfig string
 }
 
+// pathInstruction applies Instructions when a changed file matches Paths.
+type pathInstruction struct {
+	Paths        []string `json:"paths"`
+	Instructions string   `json:"instructions"`
+}
+
 // reviewIdentity is everything that determines what a review saw. Only it is
 // digested into review provenance, so publication settings can never
 // invalidate a review and a migrated configuration keeps its reviews.
@@ -74,10 +91,15 @@ type reviewIdentity struct {
 	Provider, WebBase, APIBase, Owner, Repository string
 	ProjectID, RepositoryID, SourceRepositoryID   string
 	RepoPath, PolicyFile, Branch                  string
+	// Omitted when empty, so configs without guidance keep their digest.
+	Instructions     string            `json:",omitempty"`
+	PathInstructions []pathInstruction `json:",omitempty"`
+	Exclude          []string          `json:",omitempty"`
 }
 
 func (c forgeConfig) identity() reviewIdentity {
-	return reviewIdentity{c.Provider, c.WebBase, c.APIBase, c.Owner, c.Repository, c.ProjectID, c.RepositoryID, c.SourceRepositoryID, c.RepoPath, c.PolicyFile, c.Branch}
+	return reviewIdentity{c.Provider, c.WebBase, c.APIBase, c.Owner, c.Repository, c.ProjectID, c.RepositoryID, c.SourceRepositoryID, c.RepoPath, c.PolicyFile, c.Branch,
+		c.Instructions, c.PathInstructions, c.Exclude}
 }
 
 type forgeCapture struct {
@@ -134,6 +156,21 @@ func validateForgeConfig(c forgeConfig) (forgeConfig, error) {
 	}
 	if c.InlineCommentMode == "post" && c.BotUserID == "" {
 		return c, errors.New("inline_comment_mode post requires bot_user_id")
+	}
+	if c.Suggestions != "" && c.Suggestions != "include" && c.Suggestions != "off" {
+		return c, errors.New("suggestions must be include or off")
+	}
+	switch c.InlineMinSeverity {
+	case "", "info", "low", "medium", "high", "critical":
+	default:
+		return c, errors.New("inline_min_severity must be info, low, medium, high or critical")
+	}
+	guidance := config.ReviewSettings{Instructions: c.Instructions, Exclude: c.Exclude}
+	for _, pi := range c.PathInstructions {
+		guidance.PathInstructions = append(guidance.PathInstructions, config.PathInstruction{Paths: pi.Paths, Instructions: pi.Instructions})
+	}
+	if e := guidance.Validate("review"); e != nil {
+		return c, e
 	}
 	if c.CommentMode == "post" && c.BotUserID == "" {
 		return c, errors.New("comment_mode post requires bot_user_id")
@@ -504,7 +541,11 @@ func forgeReview(ctx context.Context, c forgeConfig, raw string, o reviewOptions
 		return fail(2, e)
 	}
 	defer close()
-	items, e := reviewContext(ctx, o.State, c.RepoPath, d.Head, d.Patch)
+	kept, excluded, e := excludeFiles(d, c.Exclude)
+	if e != nil {
+		return fail(2, e)
+	}
+	items, e := reviewContext(ctx, o.State, c.RepoPath, d.Head, kept.Patch)
 	if e != nil {
 		return fail(1, e)
 	}
@@ -515,7 +556,12 @@ func forgeReview(ctx context.Context, c forgeConfig, raw string, o reviewOptions
 		return fail(2, e)
 	}
 	items = append(items, hostItem)
-	result, e := (review.Engine{Model: identityModel{m, inputID}}).Run(ctx, review.Input{Items: items, Limits: contextpack.Limits{MaxBytes: o.Cap, MaxTokens: o.Cap + 4096, ReserveTokens: 4096}, EvidenceIDs: []string{"diff", "forge_identity", "host_policy"}, Minimum: minimum, Threshold: threshold, Anchors: d.Anchors, RequirementsPass: false})
+	if guidance, ok, e := guidanceItem(c, kept); e != nil {
+		return fail(2, e)
+	} else if ok {
+		items = append([]contextpack.Item{guidance}, items...)
+	}
+	result, e := (review.Engine{Model: identityModel{m, inputID}}).Run(ctx, review.Input{Items: items, Limits: contextpack.Limits{MaxBytes: o.Cap, MaxTokens: o.Cap + 4096, ReserveTokens: 4096}, EvidenceIDs: []string{"diff", "forge_identity", "host_policy"}, Minimum: minimum, Threshold: threshold, Anchors: kept.Anchors, Excluded: excluded, RequirementsPass: false})
 	if e != nil {
 		return fail(1, e)
 	}
@@ -954,7 +1000,7 @@ func inlineComments(ctx context.Context, c forgeConfig, s *storage.Store, runID,
 	if c.InlineCommentMode == "off" {
 		return publish.InlinePublication{RunID: runID, ChangeKey: key, State: "off", Reason: "inline comments are off"}, 0, nil
 	}
-	targets, e := publish.InlineTargets(key, runID, r.Review.Findings)
+	targets, present, e := publish.BuildInlineTargets(key, runID, r.Review.Findings, publish.InlineOptions{Provider: c.Provider, Suggestions: c.Suggestions != "off", MinSeverity: c.InlineMinSeverity})
 	if e != nil {
 		return publish.InlinePublication{}, 1, e
 	}
@@ -973,7 +1019,7 @@ func inlineComments(ctx context.Context, c forgeConfig, s *storage.Store, runID,
 		targets, skipped = gitlabPositionPaths(targets, diffs)
 	}
 	service := publish.InlineService{Remote: &forgeInline{forgeComments{c: c, provenance: p}}, Audit: s}
-	out, e := service.Publish(ctx, publish.InlineRequest{RunID: runID, ChangeKey: key, BotID: c.BotUserID, Targets: targets, Present: skipped})
+	out, e := service.Publish(ctx, publish.InlineRequest{RunID: runID, ChangeKey: key, BotID: c.BotUserID, Targets: targets, Present: append(present, skipped...)})
 	if e != nil {
 		return publish.InlinePublication{}, 1, e
 	}
@@ -1014,7 +1060,11 @@ func (f *forgeInline) CreateInline(ctx context.Context, ts []publish.InlineTarge
 			if t.Side == "old" {
 				side = "LEFT"
 			}
-			cs = append(cs, gh.NewReviewComment{Path: t.Path, Line: t.Line, Side: side, Body: t.Body})
+			comment := gh.NewReviewComment{Path: t.Path, Line: t.Line, Side: side, Body: t.Body}
+			if t.EndLine > t.Line {
+				comment.StartLine, comment.Line = t.Line, t.EndLine
+			}
+			cs = append(cs, comment)
 		}
 		x, e := f.github().CreateReviewComments(ctx, f.c.Owner, f.c.Repository, n, head, cs)
 		return publish.InlineComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID}, commentWriteError(e)
@@ -1363,4 +1413,98 @@ func gitlabPositionPaths(targets []publish.InlineTarget, diffs []gl.FileDiff) ([
 		out = []publish.InlineTarget{}
 	}
 	return out, skipped
+}
+
+// guidanceItem builds the trusted guidance prompt item: repository-wide
+// instructions plus only the path instructions whose globs match a changed
+// file (old or new path). It reports false when there is no guidance.
+func guidanceItem(c forgeConfig, d gitreader.Diff) (contextpack.Item, bool, error) {
+	var b strings.Builder
+	if c.Instructions != "" {
+		fmt.Fprintf(&b, "Repository review instructions:\n%s\n", c.Instructions)
+	}
+	for _, pi := range c.PathInstructions {
+		matched := false
+		for _, f := range d.Files {
+			for _, p := range []string{f.OldPath, f.NewPath} {
+				if p == "" || matched {
+					continue
+				}
+				for _, g := range pi.Paths {
+					ok, e := policy.Match(g, p)
+					if e != nil {
+						return contextpack.Item{}, false, e
+					}
+					matched = matched || ok
+				}
+			}
+		}
+		if matched {
+			fmt.Fprintf(&b, "\nInstructions for files matching %s:\n%s\n", strings.Join(pi.Paths, ", "), pi.Instructions)
+		}
+	}
+	if b.Len() == 0 {
+		return contextpack.Item{}, false, nil
+	}
+	content := "Trusted review guidance from the operator's configuration (not from the change under review).\n\n" + b.String()
+	return contextpack.Item{ID: "trusted_guidance", Layer: "trusted_guidance", Content: content, Required: true}, true, nil
+}
+
+// excludeFiles removes files matching trusted exclusion globs from the diff
+// sent to the model: their files, patches and anchors. A file is excluded
+// only when every path it has matches, so moving a file out of an excluded
+// directory is still reviewed. It returns the excluded paths, sorted.
+func excludeFiles(d gitreader.Diff, patterns []string) (gitreader.Diff, []string, error) {
+	for _, g := range patterns {
+		if _, e := policy.Match(g, "x"); e != nil || g == "" {
+			return d, nil, fmt.Errorf("invalid exclude glob %q", g)
+		}
+	}
+	if len(patterns) == 0 {
+		return d, nil, nil
+	}
+	matches := func(p string) bool {
+		for _, g := range patterns {
+			if ok, _ := policy.Match(g, p); ok {
+				return true
+			}
+		}
+		return false
+	}
+	type side struct{ path, side string }
+	gone := map[side]bool{}
+	var excluded []string
+	out := d
+	out.Files, out.Anchors = nil, nil
+	var patch strings.Builder
+	for _, f := range d.Files {
+		all := f.OldPath != "" || f.NewPath != ""
+		for _, p := range []string{f.OldPath, f.NewPath} {
+			if p != "" && !matches(p) {
+				all = false
+			}
+		}
+		if all {
+			name := f.NewPath
+			if name == "" {
+				name = f.OldPath
+			}
+			excluded = append(excluded, name)
+			gone[side{f.OldPath, "old"}], gone[side{f.NewPath, "new"}] = true, true
+			continue
+		}
+		out.Files = append(out.Files, f)
+		patch.WriteString(f.Patch)
+	}
+	if len(excluded) == 0 {
+		return d, nil, nil
+	}
+	for _, a := range d.Anchors {
+		if !gone[side{a.Path, a.Side}] {
+			out.Anchors = append(out.Anchors, a)
+		}
+	}
+	out.Patch = patch.String()
+	slices.Sort(excluded)
+	return out, excluded, nil
 }

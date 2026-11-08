@@ -137,3 +137,13 @@ finding on its changed line, posted as a single review), then
 - **Content type**: `application/json`
 - **Secret**: the value of `GITHUB_WEBHOOK_SECRET`
 - **Events**: **Pull requests** and **Pushes**
+
+## Steer and tune the review
+
+`review.instructions`, `review.path_instructions` and `review.exclude` add
+trusted guidance and leave generated or vendored files out of the review.
+`publish.inline_min_severity` controls how chatty inline comments are, and
+`publish.suggestions` adds one-click suggestion blocks (multi-line suggestions
+span the changed lines they replace). See
+[Steer and tune the review](gitlab.md#steer-and-tune-the-review) for an example; it
+works the same on GitHub.

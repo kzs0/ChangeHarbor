@@ -15,6 +15,9 @@ type Input struct {
 	Minimum, Threshold int
 	RequirementsPass   bool
 	Anchors            []git.Anchor
+	// Excluded lists files left out of the model's input by trusted policy.
+	// They are recorded in coverage and don't make it incomplete.
+	Excluded []string
 }
 type Result struct {
 	Status                            string
@@ -41,6 +44,9 @@ func (e Engine) Run(ctx context.Context, i Input) (Result, error) {
 	p, err := contextpack.Pack(ctx, i.Items, i.Limits)
 	if err != nil {
 		return r, err
+	}
+	for _, path := range i.Excluded {
+		p.Coverage = append(p.Coverage, contextpack.Entry{ID: "excluded:" + path, Status: "excluded_by_trusted_policy"})
 	}
 	r.Package = p
 	known := map[string]bool{}
@@ -132,6 +138,14 @@ func validateAnchors(v model.Review, anchors []git.Anchor) error {
 		}
 		if !known[git.Anchor{Path: f.Path, Line: f.Line, Side: side}] {
 			return fmt.Errorf("finding outside canonical changed lines")
+		}
+		if f.Suggestion != "" {
+			end := max(f.SuggestionEndLine, f.Line)
+			for l := f.Line; l <= end; l++ {
+				if side != "new" || !known[git.Anchor{Path: f.Path, Line: l, Side: "new"}] {
+					return fmt.Errorf("suggestion outside new-side changed lines")
+				}
+			}
 		}
 	}
 	changed := map[string]bool{}

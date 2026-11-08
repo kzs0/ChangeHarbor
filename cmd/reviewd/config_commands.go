@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -232,10 +233,17 @@ func (u unifiedConfig) compile(name string) (forgeConfig, map[string]string, err
 	c := forgeConfig{Provider: r.Provider, WebBase: ep.WebBase, APIBase: ep.APIBase, Owner: ep.Owner, Repository: ep.Path,
 		RepositoryID: l.RepositoryID, SourceRepositoryID: l.SourceRepositoryID, RepoPath: r.Mirror.Path, TokenEnv: r.TokenEnv,
 		PolicyFile: r.Policy, Branch: r.Branch, BotUserID: l.BotUserID, Mode: approvalModes[r.Publish.Approvals], CommentMode: commentModes[r.Publish.Comments], InlineCommentMode: commentModes[r.Publish.InlineComments], Protections: r.Publish.Protections,
+		Suggestions: r.Publish.Suggestions, InlineMinSeverity: r.Publish.InlineMinSeverity,
 		name: name, response: r.Response, modelConfig: u.settings.Models[r.Model]}
 	src["repository_id"], src["source_repository_id"], src["branch"], src["bot_user_id"] = "lock", "lock", "file", "lock"
 	if c.Branch == "" {
 		c.Branch, src["branch"] = l.DefaultBranch, "lock"
+	}
+	if r.Review != nil {
+		c.Instructions, c.Exclude = r.Review.Instructions, r.Review.Exclude
+		for _, pi := range r.Review.PathInstructions {
+			c.PathInstructions = append(c.PathInstructions, pathInstruction{Paths: pi.Paths, Instructions: pi.Instructions})
+		}
 	}
 	if r.BotUserID != "" {
 		src["bot_user_id"] = "file"
@@ -292,10 +300,15 @@ func (c forgeConfig) effective() map[string]any {
 	out := map[string]any{"provider": c.Provider, "web_base": c.WebBase, "api_base": c.APIBase, "repository": strings.Trim(c.Owner+"/"+c.Repository, "/"),
 		"repository_id": c.RepositoryID, "source_repository_id": c.SourceRepositoryID, "branch": c.Branch, "mirror": c.RepoPath, "sync_remote": c.SyncRemote,
 		"policy": c.PolicyFile, "model": c.modelConfig, "response": c.response, "token_env": c.TokenEnv, "bot_user_id": c.BotUserID,
-		"approvals":       map[string]string{"off": "off", "evaluate": "shadow", "submit": "submit", "": "off", "shadow": "off"}[c.Mode],
-		"comments":        map[string]string{"off": "off", "": "shadow", "post": "post"}[c.CommentMode],
-		"inline_comments": map[string]string{"off": "off", "": "shadow", "post": "post"}[c.InlineCommentMode],
-		"protections":     map[string]string{"": "required", "required": "required", "advisory": "advisory"}[c.Protections]}
+		"approvals":           map[string]string{"off": "off", "evaluate": "shadow", "submit": "submit", "": "off", "shadow": "off"}[c.Mode],
+		"comments":            map[string]string{"off": "off", "": "shadow", "post": "post"}[c.CommentMode],
+		"inline_comments":     map[string]string{"off": "off", "": "shadow", "post": "post"}[c.InlineCommentMode],
+		"suggestions":         map[string]string{"": "include", "include": "include", "off": "off"}[c.Suggestions],
+		"inline_min_severity": cmp.Or(c.InlineMinSeverity, "low"),
+		"instructions":        c.Instructions,
+		"path_instructions":   c.PathInstructions,
+		"exclude":             c.Exclude,
+		"protections":         map[string]string{"": "required", "required": "required", "advisory": "advisory"}[c.Protections]}
 	if c.Provider == "gitlab" {
 		jobs := []string{}
 		for j := range c.RequiredChecks {
@@ -319,7 +332,8 @@ func (c forgeConfig) effective() map[string]any {
 
 // Keys whose change alters review identity and therefore invalidates
 // existing reviews.
-var reviewInvalidating = []string{"url", "provider", "api_url", "fork_source", "mirror.path", "policy", "branch"}
+var reviewInvalidating = []string{"url", "provider", "api_url", "fork_source", "mirror.path", "policy", "branch",
+	"review.instructions", "review.path_instructions", "review.exclude"}
 
 type repoReport struct {
 	Effective          map[string]any
@@ -606,6 +620,25 @@ func configMigrate(args []string) (int, error) {
 	comments := map[string]string{"": "shadow", "off": "off", "post": "post"}[c.CommentMode]
 	inline := map[string]string{"": "shadow", "off": "off", "post": "post"}[c.InlineCommentMode]
 	publishSettings := map[string]any{"approvals": approvals, "comments": comments, "inline_comments": inline}
+	if c.Suggestions != "" {
+		publishSettings["suggestions"] = c.Suggestions
+	}
+	if c.InlineMinSeverity != "" {
+		publishSettings["inline_min_severity"] = c.InlineMinSeverity
+	}
+	if c.Instructions != "" || len(c.PathInstructions) > 0 || len(c.Exclude) > 0 {
+		reviewSettings := map[string]any{}
+		if c.Instructions != "" {
+			reviewSettings["instructions"] = c.Instructions
+		}
+		if len(c.PathInstructions) > 0 {
+			reviewSettings["path_instructions"] = c.PathInstructions
+		}
+		if len(c.Exclude) > 0 {
+			reviewSettings["exclude"] = c.Exclude
+		}
+		repo["review"] = reviewSettings
+	}
 	if c.Protections != "" {
 		publishSettings["protections"] = c.Protections
 	}

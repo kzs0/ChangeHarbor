@@ -96,6 +96,8 @@ Under `repositories.<name>`:
 | `publish.approvals` | `shadow` | `off`: nothing. `shadow`: evaluate every live requirement and report *would approve* or *would withhold*. `submit`: approve the reviewed commit. |
 | `publish.inline_comments` | `shadow` | `off`: nothing. `shadow`: print the inline comments it would post (no remote calls). `post`: one comment per finding on its changed line; a finding no longer reported has its comment marked *possibly outdated* (never deleted or resolved), and unmarked if it returns. |
 | `publish.comments` | `shadow` | `off`: nothing. `shadow`: render the comment only. `post`: create or update the owned summary comment. |
+| `publish.suggestions` | `include` | `include`: when the model proposes a replacement for changed lines, the inline comment carries a one-click suggestion block. `off`: never. A human applies a suggestion; ChangeHarbor never writes code. |
+| `publish.inline_min_severity` | `low` | Lowest severity posted inline: `info`, `low`, `medium`, `high` or `critical`. Lower findings stay in the summary comment, and their earlier inline comments are kept, not marked outdated. |
 | `publish.protections` | `required` | `required`: approve only when the forge's own protections are in place (GitLab merge and approval settings and protected branch; GitHub strict branch protection). `advisory`: approve regardless of protection settings. `doctor` then reports gaps as warnings. Must be set explicitly. |
 
 Whatever the protection mode, ChangeHarbor withdraws its own approval when the
@@ -115,6 +117,39 @@ change or its target moves.
 | --- | --- | --- |
 | `github.required_checks` | — | Check name → ID of the GitHub App that must have produced it, e.g. `test: "15368"` (GitHub Actions). |
 
+### `review`
+
+Trusted review guidance and path filters. They come only from this file, never
+from the repository under review.
+
+```yaml
+# changeharbor.yaml
+version: 1
+repositories:
+  app:
+    url: https://gitlab.com/group/app
+    token_env: GITLAB_TOKEN
+    mirror:
+      path: /srv/mirrors/app.git
+    policy: policies/app.json
+    review:
+      instructions: Prefer explicit error handling. Flag any new global state.
+      path_instructions:
+        - paths: ["migrations/**"]
+          instructions: Check that every migration can be rolled back.
+      exclude: ["vendor/**", "**/*.pb.go", "go.sum"]
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `review` | — | The section itself. Changing anything in it invalidates existing reviews. |
+| `review.instructions` | — | Repository-wide instructions added to every review prompt. |
+| `review.path_instructions` | — | List of `{paths, instructions}`. An entry is added only when a changed file (old or new path) matches one of its globs. |
+| `review.exclude` | — | Globs of files left out of the model's input, such as lockfiles, vendored and generated code. Excluded files are listed in the summary and can't get comments. Risk-policy minimums still count them, so excluding can't lower risk. A file moved out of an excluded directory is still reviewed. |
+
+All instructions together are capped at 16 KiB. Globs use `*` within a path
+segment, `?` for one character and `**` for whole segments.
+
 ### `summary`
 
 Optional background summaries of the repository, used as review context.
@@ -128,7 +163,9 @@ Optional background summaries of the repository, used as review context.
 
 A saved review can only be published while its **review identity** is
 unchanged: `url`, `provider`, `api_url`, `fork_source`, `mirror.path`, `policy`
-(and the policy file's contents, except `auto_approve_max`) and `branch`.
+(and the policy file's contents, except `auto_approve_max`), `branch`, and
+everything under `review` (`review.instructions`, `review.path_instructions`,
+`review.exclude`).
 Everything under `publish`, `gitlab`, `github`, tokens and sync settings can
 change freely. `reviewd config check` lists the identity keys.
 

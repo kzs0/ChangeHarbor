@@ -21,10 +21,13 @@ and target commits, project IDs) from the API, never from webhook payloads.
 from here, with hooks and external diff tools disabled. ChangeHarbor can keep
 it fresh itself (`mirror.sync`).
 
-**Review.** Host code builds one prompt: the exact diff, related source and
-your trusted policy facts. One model call returns findings, open questions
-and `model_merge_risk` (1 = lowest risk, 10 = highest). The model has no
-tools and can't ask for more.
+**Review.** Host code builds one prompt: your trusted review instructions
+(`review.instructions`, plus path instructions for the files that changed),
+the exact diff, related source and your trusted policy facts. Files matching
+`review.exclude` are left out and listed in the summary. One model call
+returns findings (optionally with a suggested fix), open questions and
+`model_merge_risk` (1 = lowest risk, 10 = highest). The model has no tools and
+can't ask for more.
 
 **Risk policy.** A [JSON policy](../configuration/policy.md) sets minimum risk
 scores from facts the model can't change: touched paths, change size, author

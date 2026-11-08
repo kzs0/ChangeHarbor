@@ -179,6 +179,25 @@
                   "post"
                 ],
                 "description": "off, shadow (plan only, no remote calls) or post (one comment per anchored finding on its changed line; findings no longer reported are marked possibly outdated). Default shadow."
+              },
+              "suggestions": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "include"
+                ],
+                "description": "include (default): add a committable suggestion block to inline comments when the model proposes a replacement for changed lines. off: never include one."
+              },
+              "inline_min_severity": {
+                "type": "string",
+                "enum": [
+                  "info",
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ],
+                "description": "Lowest finding severity posted as an inline comment. Default low: info findings stay in the summary only."
               }
             }
           },
@@ -242,6 +261,49 @@
               "limits": {
                 "type": "object",
                 "description": "Summary limits (see contextbuild.SummaryLimits)."
+              }
+            }
+          },
+          "review": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Trusted review guidance and path filters. Comes only from this file, never from the repository under review. Changing it invalidates existing reviews.",
+            "properties": {
+              "instructions": {
+                "type": "string",
+                "description": "Repository-wide review instructions added to every review prompt."
+              },
+              "path_instructions": {
+                "type": "array",
+                "description": "Instructions added only when a changed file (old or new path) matches one of the globs.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "paths",
+                    "instructions"
+                  ],
+                  "properties": {
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Globs: * within a segment, ? one character, ** whole segments."
+                    },
+                    "instructions": {
+                      "type": "string",
+                      "description": "Instructions for matching files."
+                    }
+                  }
+                }
+              },
+              "exclude": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Globs of files left out of the model's input (generated, vendored, lockfiles). Risk-policy minimums still count them."
               }
             }
           }

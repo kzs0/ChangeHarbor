@@ -171,6 +171,44 @@ repositories:
       approvals: submit       # ...then approvals
 ```
 
+## Steer and tune the review
+
+Optional, and the same on GitHub:
+
+```yaml
+# changeharbor.yaml
+version: 1
+models:
+  default: models/review.json
+repositories:
+  app:
+    url: https://gitlab.com/group/app
+    token_env: GITLAB_TOKEN
+    mirror:
+      path: /srv/mirrors/app.git
+    policy: policies/app.json
+    review:
+      instructions: Prefer explicit error handling. Flag any new global state.
+      path_instructions:
+        - paths: ["migrations/**"]
+          instructions: Check that every migration can be rolled back.
+      exclude: ["vendor/**", "**/*.pb.go", "go.sum"]
+    publish:
+      inline_comments: post
+      inline_min_severity: medium   # low (default) also posts low findings
+      suggestions: include          # the default: one-click suggestion blocks
+```
+
+- **Instructions** are added to the review prompt as trusted guidance. Path
+  instructions are added only when a changed file matches.
+- **Excluded files** (a good start: lockfiles, `vendor/**`, generated code)
+  never reach the model and can't get comments. They're listed in the summary,
+  and risk-policy minimums still count them.
+- **Suggestions** let reviewers apply a fix in one click. A suggestion
+  containing a line that starts with `/` is left out on GitLab, where that
+  line could run a quick action.
+- Changing `review` invalidates existing reviews; the `publish` settings don't.
+
 ## 11. Automate with webhooks
 
 Run the [service](service.md), then in **Settings → Webhooks → Add new

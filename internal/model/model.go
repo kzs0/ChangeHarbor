@@ -49,7 +49,16 @@ type Finding struct {
 	Line        int      `json:"line"`
 	Side        string   `json:"side,omitempty"`
 	EvidenceIDs []string `json:"evidence_ids"`
+	// Suggestion optionally replaces the new-side lines Line through
+	// SuggestionEndLine (default: Line) with committable text. A human
+	// applies it; ChangeHarbor never writes code.
+	Suggestion        string `json:"suggestion,omitempty"`
+	SuggestionEndLine int    `json:"suggestion_end_line,omitempty"`
 }
+
+// MaxSuggestionBytes caps a finding's suggested replacement.
+const MaxSuggestionBytes = 8 * 1024
+
 type Review struct {
 	SchemaVersion        int       `json:"schema_version"`
 	Summary              string    `json:"summary"`
@@ -121,6 +130,21 @@ func ValidateReview(r Response, ids []string) (Review, error) {
 		}
 		if err := check(f.EvidenceIDs); err != nil {
 			return out, err
+		}
+		if f.SuggestionEndLine < 0 || f.SuggestionEndLine > 0 && f.Suggestion == "" {
+			return out, fmt.Errorf("suggestion end line without a suggestion")
+		}
+		if f.Suggestion != "" {
+			switch {
+			case f.Path == "" || f.Line <= 0:
+				return out, fmt.Errorf("suggestion on an unanchored finding")
+			case f.Side != "" && f.Side != "new":
+				return out, fmt.Errorf("suggestion on an old-side line")
+			case f.SuggestionEndLine > 0 && f.SuggestionEndLine < f.Line:
+				return out, fmt.Errorf("suggestion end line before its start")
+			case len(f.Suggestion) > MaxSuggestionBytes:
+				return out, fmt.Errorf("suggestion exceeds %d bytes", MaxSuggestionBytes)
+			}
 		}
 	}
 	seen := map[string]bool{}
