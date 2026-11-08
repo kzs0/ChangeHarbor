@@ -3,10 +3,11 @@
 This guide takes one GitLab project from nothing to automatic, revision-bound
 approvals. Each step can be checked, and nothing writes to GitLab until step 10.
 
-!!! info "Works on every GitLab tier"
-    Reviews, comments and approvals all work on GitLab Free, Premium and
-    Ultimate. ChangeHarbor approves whenever `publish.approvals` is `submit`
-    and its own evidence holds. It doesn't depend on your merge settings.
+!!! info "GitLab tier"
+    By default ChangeHarbor only approves when the project's own protections
+    are in place (step 4). Some of them (approval settings and rules) are
+    Premium features. On GitLab Free, reviews and comments work, and approvals
+    work only if you opt in to `publish.protections: advisory`.
 
 ## 1. Install ChangeHarbor
 
@@ -51,23 +52,28 @@ means. Move it to a project MR authors can't edit:
 This is `gitlab.ci_trust: external_config`, the default. If you can't move the
 file, see `unchanged_config` in the [reference](../configuration/reference.md#gitlab).
 
-## 4. Choose merge settings (recommended, not required)
+## 4. Configure merge requests
 
-ChangeHarbor approves regardless of these settings. They decide what GitLab
-itself enforces at merge time, so they're good practice:
+By default (`publish.protections: required`) ChangeHarbor approves only when
+GitLab itself enforces these. In **Settings → Merge requests**:
 
-| Setting (**Settings → Merge requests**) | Recommended | Without it |
+| Setting | Value | Why |
 | --- | --- | --- |
-| Merge method | **Fast-forward** or **semi-linear**, or **merged results pipelines** | An MR can merge onto a newer target than the one reviewed. ChangeHarbor withdraws its approval when the target moves. |
-| **Pipelines must succeed** | On | GitLab lets a failing MR merge. ChangeHarbor still only approves after its required jobs pass. |
-| **Skipped pipelines are considered successful** | Off | Skipped pipelines count for merging, though never for ChangeHarbor. |
-| Approval settings → **When a commit is added** | **Remove all approvals** | Other people's approvals survive new commits. ChangeHarbor withdraws *its own* approval whenever the MR changes. |
-| Approval rules | Make the bot an eligible approver | The bot's approval doesn't count toward that rule. |
+| Merge method | **Fast-forward merge** or **Merge commit with semi-linear history** (or enable **merged results pipelines**) | An MR can't merge on a stale target. |
+| Merge checks → **Pipelines must succeed** | On | The pipeline gates the merge. |
+| **Skipped pipelines are considered successful** | Off | A skipped pipeline proves nothing. |
+| Approval settings → **When a commit is added** | **Remove all approvals** | An approval only ever covers the commit ChangeHarbor reviewed. |
+| Approval rules | Include the bot (or use *All eligible users*) with 1 required approval | The bot's approval has to count. |
 
-In **Settings → Repository → Protected branches**, protecting `main` with
-**Allowed to force push** off keeps history from changing under reviewed code.
+Then in **Settings → Repository → Protected branches**, protect `main` and
+turn **Allowed to force push** off.
 
-`reviewd doctor` reports each of these as a warning when it's off.
+!!! warning "Approving without these protections"
+    If you can't, or don't want to, set these, add
+    `publish.protections: advisory` to the repository. ChangeHarbor then
+    approves regardless of them, `doctor` reports them as warnings, and
+    approvals work on GitLab Free. Either way, ChangeHarbor withdraws its own
+    approval when the MR or its target moves.
 
 ## 5. Create a mirror
 
@@ -130,8 +136,9 @@ reviewd doctor
 
 `doctor` checks the token, the bot's role, the CI configuration, the settings
 from step 4, the approval rules and the mirror. It writes nothing. Fix anything
-marked `error`: ChangeHarbor can't work until you do. `warning`s describe
-protection GitLab itself isn't providing.
+marked `error`: approvals are withheld until you do. With
+`publish.protections: advisory`, the step 4 settings are reported as
+`warning`s instead.
 
 ## 9. Try it in shadow mode
 

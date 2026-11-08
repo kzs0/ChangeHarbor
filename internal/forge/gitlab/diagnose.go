@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// Check is one deployment preflight result. Errors stop ChangeHarbor from
-// working; warnings describe protection the forge itself isn't providing.
-// Approvals never depend on protection settings.
+// Check is one deployment preflight result. Errors block approvals; warnings
+// explain predictable withholding, excess privilege or, with advisory
+// protections, protection the forge itself isn't providing.
 type Check struct {
 	Name     string
 	OK       bool
@@ -21,7 +21,10 @@ type Check struct {
 
 type DiagnoseInput struct {
 	ProjectID, ProjectPath, Branch, BotUserID, CITrust string
-	Now                                                time.Time
+	// Protections "advisory" reports protection gaps as warnings; by
+	// default they are errors because approvals require them.
+	Protections string
+	Now         time.Time
 }
 
 // Failed reports whether any check failed with error severity.
@@ -52,6 +55,10 @@ type projectRule struct {
 func (c *Client) Diagnose(ctx context.Context, in DiagnoseInput) ([]Check, error) {
 	if !numeric.MatchString(in.ProjectID) || in.Branch == "" {
 		return nil, errors.New("invalid diagnose request")
+	}
+	gap := "error"
+	if in.Protections == "advisory" {
+		gap = "warning"
 	}
 	now := in.Now
 	if now.IsZero() {
@@ -115,12 +122,12 @@ func (c *Client) Diagnose(ctx context.Context, in DiagnoseInput) ([]Check, error
 	if e != nil {
 		return nil, e
 	}
-	out = append(out, cond(p.PipelineMustSucceed, "pipelines_required", "warning", "pipelines must succeed before merge",
-		"GitLab lets MRs merge with a failing pipeline; ChangeHarbor still only approves after its required jobs pass ('Pipelines must succeed' adds a merge gate)"))
-	out = append(out, cond(!p.AllowSkippedPipeline, "skipped_pipelines", "warning", "skipped pipelines cannot be merged",
-		"skipped pipelines count as passing for merges (not for ChangeHarbor approvals)"))
-	out = append(out, cond(p.MergeMethod == "ff" || p.MergeMethod == "rebase_merge" || p.MergedResultsPipelines, "target_freshness", "warning",
-		"merge method "+p.MergeMethod, "an MR can merge onto a target newer than the one ChangeHarbor reviewed; ChangeHarbor withdraws its approval when the target moves"))
+	out = append(out, cond(p.PipelineMustSucceed, "pipelines_required", gap, "pipelines must succeed before merge",
+		"enable 'Pipelines must succeed': GitLab otherwise lets MRs merge with a failing pipeline"))
+	out = append(out, cond(!p.AllowSkippedPipeline, "skipped_pipelines", gap, "skipped pipelines cannot be merged",
+		"disable 'Skipped pipelines are considered successful'"))
+	out = append(out, cond(p.MergeMethod == "ff" || p.MergeMethod == "rebase_merge" || p.MergedResultsPipelines, "target_freshness", gap,
+		"merge method "+p.MergeMethod, "use fast-forward or semi-linear merges, or enable merged results pipelines: an MR can otherwise merge onto a newer target than the one reviewed"))
 	out = append(out, cond(!p.MergeTrains, "merge_trains", "warning", "merge trains disabled", "merge train pipelines cannot be bound to the reviewed commit; approvals are withheld while a train pipeline is the head pipeline"))
 
 	a, e := c.ApprovalSettings(ctx, in.ProjectID)
@@ -128,25 +135,25 @@ func (c *Client) Diagnose(ctx context.Context, in DiagnoseInput) ([]Check, error
 	case e != nil && !unavailable(e):
 		return nil, e
 	case e != nil:
-		out = append(out, fail("approval_reset", "warning", "approval settings unavailable (GitLab Free); approvals are kept on push, so ChangeHarbor withdraws its own when the MR changes"))
+		out = append(out, fail("approval_reset", gap, "approval settings unavailable (GitLab Free); required protections need Premium, or set publish.protections: advisory"))
 	default:
-		out = append(out, cond(a.ResetOnPush && !a.SelectiveCodeOwnerRemovals, "approval_reset", "warning", "approvals reset on push",
-			"approvals are kept when commits are added; ChangeHarbor withdraws its own when the MR changes, but other approvals remain"))
+		out = append(out, cond(a.ResetOnPush && !a.SelectiveCodeOwnerRemovals, "approval_reset", gap, "approvals reset on push",
+			"enable 'Remove all approvals when commits are added': approvals are otherwise kept on push"))
 	}
 
 	b, e := c.ProtectedBranch(ctx, in.ProjectID, in.Branch)
 	if e != nil {
 		return nil, e
 	}
-	out = append(out, cond(b.Protected && !b.AllowForcePush, "branch_protection", "warning", "protected without force push",
-		in.Branch+" is unprotected or allows force push; history can change under reviewed code"))
+	out = append(out, cond(b.Protected && !b.AllowForcePush, "branch_protection", gap, "protected without force push",
+		"protect "+in.Branch+" and disallow force push: history can otherwise change under reviewed code"))
 
 	var rules []projectRule
 	switch e := c.request(ctx, "GET", "/projects/"+in.ProjectID+"/approval_rules?per_page=100", nil, &rules); {
 	case e != nil && !unavailable(e):
 		return nil, e
 	case e != nil:
-		out = append(out, fail("approval_rules", "warning", "approval rules unavailable (GitLab Free); approvals are optional there"))
+		out = append(out, fail("approval_rules", gap, "approval rules unavailable (GitLab Free); required protections need Premium, or set publish.protections: advisory"))
 	default:
 		var blocked []string
 		for _, r := range rules {
@@ -158,7 +165,11 @@ func (c *Client) Diagnose(ctx context.Context, in DiagnoseInput) ([]Check, error
 			}
 		}
 		if len(blocked) > 0 {
-			out = append(out, fail("approval_rules", "warning", "bot cannot satisfy rules "+strings.Join(blocked, ", ")+" alone; its approval counts toward them but humans must also approve"))
+			detail := "bot cannot satisfy rules " + strings.Join(blocked, ", ") + " alone; approvals are withheld for MRs they cover"
+			if gap == "warning" {
+				detail = "bot cannot satisfy rules " + strings.Join(blocked, ", ") + " alone; its approval counts toward them but humans must also approve"
+			}
+			out = append(out, fail("approval_rules", "warning", detail))
 		} else {
 			out = append(out, pass("approval_rules", "bot can satisfy every required rule"))
 		}

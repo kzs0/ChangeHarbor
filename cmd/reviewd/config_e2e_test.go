@@ -209,12 +209,12 @@ func TestConfigCheckExplainsEffectiveValues(t *testing.T) {
 		t.Fatalf("%d %s %s %v", code, out, stderr, e)
 	}
 	r := c.Repositories["app"]
-	for key, want := range map[string]string{"publish.approvals": "default", "publish.comments": "file", "branch": "lock", "gitlab.required_jobs": "policy", "gitlab.ci_trust": "default", "mirror.sync": "default", "repository_id": "lock", "bot_user_id": "lock"} {
+	for key, want := range map[string]string{"publish.protections": "default", "publish.approvals": "default", "publish.comments": "file", "branch": "lock", "gitlab.required_jobs": "policy", "gitlab.ci_trust": "default", "mirror.sync": "default", "repository_id": "lock", "bot_user_id": "lock"} {
 		if r.Sources[key] != want {
 			t.Fatalf("source %s=%q want %q (%v)", key, r.Sources[key], want, r.Sources)
 		}
 	}
-	if r.Effective["branch"] != "main" || r.Effective["approvals"] != "shadow" || fmt.Sprint(r.Effective["required_jobs"]) != "[test]" || r.Effective["sync_remote"] != "" {
+	if r.Effective["branch"] != "main" || r.Effective["approvals"] != "shadow" || r.Effective["protections"] != "required" || fmt.Sprint(r.Effective["required_jobs"]) != "[test]" || r.Effective["sync_remote"] != "" {
 		t.Fatalf("effective %v", r.Effective)
 	}
 	for _, k := range []string{"url", "mirror.path", "policy", "branch"} {
@@ -405,5 +405,22 @@ func TestMigrateWritesYAML(t *testing.T) {
 	b, _ := os.ReadFile(out)
 	if strings.HasPrefix(strings.TrimSpace(string(b)), "{") || !strings.Contains(string(b), "repositories:") {
 		t.Fatalf("migrate did not write YAML:\n%s", b)
+	}
+}
+
+func TestUnifiedAdvisoryProtectionsAreOptIn(t *testing.T) {
+	u := newUnified(t, map[string]any{"approvals": "submit"})
+	u.resolve()
+	u.fake.approvalSettings = `{"reset_approvals_on_push":false}`
+	run := u.review()
+	code, out, _ := u.cli("publish", "--run", run)
+	if p := decode(t, out); code != 4 || !strings.Contains(p.Reason, "approvals are not reset on push") {
+		t.Fatalf("protection gap approved by default: %d %+v", code, p)
+	}
+	u.repo()["publish"].(map[string]any)["protections"] = "advisory"
+	u.write()
+	run = u.review()
+	if code, out, stderr := u.cli("publish", "--run", run); code != 0 || decode(t, out).State != "published" {
+		t.Fatalf("advisory protections not honoured: %d %s %s", code, out, stderr)
 	}
 }

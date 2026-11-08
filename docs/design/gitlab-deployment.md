@@ -131,3 +131,8 @@ protection settings and on any GitLab tier. The protection checks moved to
 where the forge keeps approvals on push, revalidation (item 6) also runs for
 the changed MR/PR on every MR/PR event, *before* the new head is reviewed, and
 covers GitHub by dismissing ChangeHarbor's review.
+
+**Revision:** approving regardless of protection is opt-in. Protections are
+required by default (`publish.protections: required`); a repository sets
+`publish.protections: advisory` to approve regardless of them. Withdrawal on
+move applies in both modes.

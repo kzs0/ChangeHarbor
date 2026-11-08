@@ -8,14 +8,20 @@ follow redirects, cap response bytes and return `*StatusError` for non-2xx.
 - `Change`: MR identity, state, draft (`draft` or legacy `work_in_progress`),
   target branch, head pipeline ID, diff base, and the **live** target branch tip.
 - `Collect(Expect) Facts`: one live snapshot of MR, token identity
-  (`/user`), project CI configuration path, head pipeline, merged-result
-  parents and pipeline jobs. No Premium-only endpoint and no protection
-  setting is read: approvals don't depend on them.
+  (`/user`), project settings, head pipeline, merged-result parents and
+  pipeline jobs; plus, when `Expect.Protections` is required (default),
+  approval settings, protected branch and MR approval state (403/404 from
+  Premium endpoints recorded as unknown). Advisory reads no protection
+  setting and no Premium-only endpoint.
 - `Evaluate(Facts, Expect)`: returns passed required jobs or one withholding
   reason. Approval requires all of:
   - head/target unchanged, MR open and not draft, target branch equals mapping,
     GitLab diff base equals the locally computed merge base;
   - token acts as `bot_user_id`;
+  - unless protections are advisory: pipelines must succeed, skipped
+    pipelines not mergeable, target freshness enforced natively, approvals
+    reset on push, target protected without force push, and every open
+    approval rule completable by the bot alone;
   - CI configuration trust (`ci_trust`) holds;
   - head pipeline in the target project, source `merge_request_event` or
     `push`, status `success`, and bound to the reviewed revision: either its SHA
@@ -31,8 +37,8 @@ follow redirects, cap response bytes and return `*StatusError` for non-2xx.
 - `Comments` lists MR notes excluding system notes. `CreateNote`/`UpdateNote`
   return the written note with its author; 401/403/404/422 are `ErrRejected`,
   other failures ambiguous.
-- `Diagnose`: preflight. Errors for what ChangeHarbor needs (token identity,
-  `api` scope, Developer role, CI trust); warnings for forge protections that
-  are off (merge settings, approval reset, branch protection, approval rules).
+- `Diagnose`: preflight. Errors for token identity, `api` scope, Developer
+  role, CI trust and, unless advisory, forge protections; with advisory
+  protections, protection gaps are warnings.
 - `Unapprove` (404 = already withdrawn) and `ApprovedBy` support revalidation,
   which withdraws ChangeHarbor's approval whenever the MR head or target moved.

@@ -13,12 +13,13 @@ import (
 	"github.com/kzs0/reviewd/internal/jobs"
 )
 
-// fakeGitHub serves a pull request, its check runs, reviews and dismissals.
-// It has no branch-protection route: approval must not depend on it.
+// fakeGitHub serves a pull request, branch protection, check runs, reviews
+// and dismissals.
 type fakeGitHub struct {
 	t                  *testing.T
 	head, base, state  string
-	checks             string
+	checks, protection string
+	protectionReads    int
 	approvals, dismiss []string
 }
 
@@ -26,6 +27,9 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == "GET" && r.URL.Path == "/repos/owner/repo/pulls/1":
 		fmt.Fprintf(w, `{"id":1,"state":%q,"head":{"sha":%q,"repo":{"id":10}},"base":{"sha":%q,"repo":{"id":10}}}`, f.state, f.head, f.base)
+	case r.Method == "GET" && r.URL.Path == "/repos/owner/repo/branches/main/protection":
+		f.protectionReads++
+		fmt.Fprint(w, f.protection)
 	case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/check-runs"):
 		fmt.Fprint(w, strings.ReplaceAll(f.checks, "HEAD", f.head))
 	case r.Method == "POST" && r.URL.Path == "/repos/owner/repo/pulls/1/reviews":
@@ -51,7 +55,8 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func githubFixture(t *testing.T) (*gitlabFixture, *fakeGitHub, forgeConfig) {
 	x := newGitLabFixture(t)
-	gh := &fakeGitHub{t: t, head: x.head, base: x.base, state: "open", checks: `{"total_count":1,"check_runs":[{"name":"test","head_sha":"HEAD","conclusion":"success","app":{"id":42}}]}`}
+	gh := &fakeGitHub{t: t, head: x.head, base: x.base, state: "open", checks: `{"total_count":1,"check_runs":[{"name":"test","head_sha":"HEAD","conclusion":"success","app":{"id":42}}]}`,
+		protection: `{"required_status_checks":{"strict":true,"contexts":["test"]}}`}
 	srv := httptest.NewServer(gh)
 	t.Cleanup(srv.Close)
 	c := forgeConfig{Provider: "github", WebBase: "https://github.com", APIBase: srv.URL, Owner: "owner", Repository: "repo", RepositoryID: "10", RepoPath: x.repo, TokenEnv: "GL_TOKEN",
@@ -71,12 +76,38 @@ func (x *gitlabFixture) githubReview() string {
 	return m[1]
 }
 
-func TestGitHubApprovesRegardlessOfBranchProtection(t *testing.T) {
+func TestGitHubRequiresBranchProtectionByDefault(t *testing.T) {
 	x, gh, _ := githubFixture(t)
 	run := x.githubReview()
 	code, out, stderr := x.publish(run)
-	if p := decode(t, out); code != 0 || p.State != "published" || len(gh.approvals) != 1 || gh.approvals[0] != x.head {
+	if p := decode(t, out); code != 0 || p.State != "published" || gh.protectionReads == 0 || len(gh.approvals) != 1 || gh.approvals[0] != x.head {
 		t.Fatalf("exit %d %+v %s approvals %v", code, p, stderr, gh.approvals)
+	}
+	for _, protection := range []string{
+		`{"required_status_checks":{"strict":false,"contexts":["test"]}}`,
+		`{"required_status_checks":{"strict":true,"contexts":["test"]},"required_pull_request_reviews":{"required_approving_review_count":1}}`,
+		`{"required_status_checks":{"strict":true,"contexts":["test","unmapped"]}}`,
+	} {
+		x, gh, _ := githubFixture(t)
+		run := x.githubReview()
+		gh.protection = protection
+		code, out, _ := x.publish(run)
+		if p := decode(t, out); code != 4 || p.State != "withheld" || len(gh.approvals) != 0 {
+			t.Fatalf("%s: exit %d %+v", protection, code, p)
+		}
+	}
+}
+
+func TestGitHubAdvisoryProtectionApprovesWithoutReadingIt(t *testing.T) {
+	x, gh, c := githubFixture(t)
+	c.Protections = "advisory"
+	b, _ := json.Marshal(c)
+	os.WriteFile(x.config, b, 0600)
+	gh.protection = `{"required_status_checks":{"strict":false},"required_pull_request_reviews":{"required_approving_review_count":2}}`
+	run := x.githubReview()
+	code, out, stderr := x.publish(run)
+	if p := decode(t, out); code != 0 || p.State != "published" || gh.protectionReads != 0 || len(gh.approvals) != 1 {
+		t.Fatalf("exit %d %+v %s reads %d", code, p, stderr, gh.protectionReads)
 	}
 }
 

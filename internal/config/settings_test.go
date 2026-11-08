@@ -22,11 +22,11 @@ func TestMinimalSettingsGetSafeDefaults(t *testing.T) {
 		t.Fatal(e)
 	}
 	r := s.Repositories["app"]
-	if s.State != "/base/.changeharbor" || r.Provider != "gitlab" || r.Publish.Approvals != "shadow" || r.Publish.Comments != "shadow" ||
+	if s.State != "/base/.changeharbor" || r.Provider != "gitlab" || r.Publish.Approvals != "shadow" || r.Publish.Comments != "shadow" || r.Publish.Protections != "required" ||
 		r.Mirror.Sync != "auto" || r.TokenScheme != "private-token" || r.GitLab.CITrust != "external_config" {
 		t.Fatalf("%+v %+v", s, r)
 	}
-	for _, k := range []string{"state", "repositories.app.publish.approvals", "repositories.app.publish.comments", "repositories.app.mirror.sync", "repositories.app.token_scheme", "repositories.app.gitlab.ci_trust"} {
+	for _, k := range []string{"state", "repositories.app.publish.approvals", "repositories.app.publish.comments", "repositories.app.publish.protections", "repositories.app.mirror.sync", "repositories.app.token_scheme", "repositories.app.gitlab.ci_trust"} {
 		if src[k] != "default" {
 			t.Fatalf("source %s=%q", k, src[k])
 		}
@@ -72,6 +72,7 @@ func TestErrorsNamePathAndSuggest(t *testing.T) {
 		{"repo typo", strings.Replace(minimal, `"policy":`, `"polcy":"x","policy":`, 1), `repositories.app.polcy: unknown key; did you mean "policy"?`},
 		{"top-level typo", strings.Replace(minimal, `"version":1`, `"version":1,"repositorys":{}`, 1), `repositorys: unknown key; did you mean "repositories"?`},
 		{"bad enum", strings.Replace(minimal, `"response":"/r.json"`, `"response":"/r.json","publish":{"approvals":"yes"}`, 1), `repositories.app.publish.approvals: "yes" is not one of off, shadow, submit`},
+		{"bad protections", strings.Replace(minimal, `"response":"/r.json"`, `"response":"/r.json","publish":{"protections":"ignored"}`, 1), `repositories.app.publish.protections: "ignored" is not one of required, advisory`},
 		{"near enum", strings.Replace(minimal, `"response":"/r.json"`, `"response":"/r.json","gitlab":{"ci_trust":"external"}`, 1), `did you mean "external_config"?`},
 		{"empty string", strings.Replace(minimal, `"response":"/r.json"`, `"response":"/r.json","branch":""`, 1), `repositories.app.branch: empty value; omit the key to use the default`},
 		{"wrong type", strings.Replace(minimal, `"response":"/r.json"`, `"response":"/r.json","publish":"submit"`, 1), `repositories.app.publish: must be an object`},

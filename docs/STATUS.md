@@ -37,10 +37,11 @@ infrastructure; event payload paths never authorize cloning or source execution.
 Missing Git objects produce an error, not a completed review. Live model and forge
 credentials must be supplied by the operator and remain outside repository input.
 
-Configuration is one changeharbor.yaml plus a resolved lock file (docs/design/config.md). GitLab deployment hardening (CI trust, webhook automation, mirror sync, doctor, approval revalidation, single-writer lock) is described in docs/design/gitlab-deployment.md. Approvals are submitted whenever configured and ChangeHarbor's own evidence
-holds (revisions, trusted pipeline/checks, CI trust, risk policy; see
-internal/forge/gitlab/CONTRACT.md); forge protection settings never block
-them, on any GitLab tier or on GitHub. ChangeHarbor withdraws its own approval
+Configuration is one changeharbor.yaml plus a resolved lock file (docs/design/config.md). GitLab deployment hardening (CI trust, webhook automation, mirror sync, doctor, approval revalidation, single-writer lock) is described in docs/design/gitlab-deployment.md. Approvals are submitted when configured, ChangeHarbor's own evidence holds
+(revisions, trusted pipeline/checks, CI trust, risk policy; see
+internal/forge/gitlab/CONTRACT.md) and, by default, the forge's protections
+are in place; `publish.protections: advisory` opts out of the protection
+requirement. ChangeHarbor withdraws its own approval
 when the change or its target moves, so approvals don't outlive the reviewed
 commit even where the forge keeps approvals on push.
 

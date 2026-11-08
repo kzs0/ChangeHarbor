@@ -49,6 +49,7 @@ still accepted.
   | --- | --- | --- |
   | `publish.approvals` | `off`, `shadow` (evaluate everything, write nothing), `submit` | `shadow` |
   | `publish.comments` | `off`, `shadow` (render only), `post` | `shadow` |
+  | `publish.protections` | `required`, `advisory` (approve regardless of forge protections) | `required` |
   | `mirror.sync` | `auto` (use `origin` if configured), `none`, remote name | `auto` |
   | `branch` | branch name | default branch from the lock |
   | `token_scheme` (GitLab) | `private-token`, `bearer` | `private-token` |

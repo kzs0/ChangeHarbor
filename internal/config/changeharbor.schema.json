@@ -162,6 +162,14 @@
                   "shadow",
                   "post"
                 ]
+              },
+              "protections": {
+                "type": "string",
+                "enum": [
+                  "required",
+                  "advisory"
+                ],
+                "description": "required (default): approve only when the forge's own protections are in place. advisory: approve regardless of protection settings; doctor reports gaps as warnings. Must be set explicitly."
               }
             }
           },

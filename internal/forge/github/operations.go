@@ -108,6 +108,40 @@ func (c *Client) Checks(ctx context.Context, owner, repo, revision string, maxPa
 	return nil, errors.New("check pagination cap exceeded")
 }
 
+type Protection struct {
+	Known, RequiredReviews, StrictChecks bool
+	RequiredContexts                     []string
+	Reason                               string
+}
+
+func (c *Client) Protection(ctx context.Context, owner, repo, branch string) (Protection, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return Protection{}, e
+	}
+	if branch == "" || strings.ContainsAny(branch, "\x00\r\n") {
+		return Protection{}, errors.New("branch required")
+	}
+	var x struct {
+		Checks *struct {
+			Strict   bool
+			Contexts []string
+		} `json:"required_status_checks"`
+		Reviews *struct {
+			Count int `json:"required_approving_review_count"`
+		} `json:"required_pull_request_reviews"`
+	}
+	if e = c.request(ctx, "GET", p+"/branches/"+url.PathEscape(branch)+"/protection", nil, &x); e != nil {
+		return Protection{Reason: "branch protection unavailable"}, e
+	}
+	r := Protection{Known: true, RequiredReviews: x.Reviews != nil && x.Reviews.Count > 0}
+	if x.Checks != nil {
+		r.StrictChecks = x.Checks.Strict
+		r.RequiredContexts = x.Checks.Contexts
+	}
+	return r, nil
+}
+
 // Approve is a revision-bound transport primitive. Only host publication code
 // may call it after policy/check/native-protection and job generation validation.
 func (c *Client) Approve(ctx context.Context, owner, repo string, number int, head string) (string, error) {
