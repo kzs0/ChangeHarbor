@@ -121,3 +121,13 @@ unsupported, but nothing enforced that.
 lifetime (`doctor` is read-only and does not); a second holder fails with "another reviewd instance holds the
 state lock". Inside `serve` the automated flow runs under the service's lock
 rather than taking it again.
+
+## Update: approvals no longer depend on protections
+
+Approvals are now submitted whenever `publish.approvals` is `submit` and
+ChangeHarbor's own evidence holds, on GitLab and GitHub, whatever the forge's
+protection settings and on any GitLab tier. The protection checks moved to
+`doctor` as warnings. To keep approvals from outliving the reviewed commit
+where the forge keeps approvals on push, revalidation (item 6) also runs for
+the changed MR/PR on every MR/PR event, *before* the new head is reviewed, and
+covers GitHub by dismissing ChangeHarbor's review.

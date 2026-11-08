@@ -26,17 +26,9 @@ review does.
 | merge request targets a different branch than the trusted mapping | Retarget it, or configure that branch as its own repository entry. |
 | credential does not act as the configured bot user | The token belongs to someone else. Run `reviewd config resolve` after changing tokens. |
 
-## GitLab project settings
-
-| Reason | Setting |
-| --- | --- |
-| pipelines are not required to succeed before merge | **Settings → Merge requests → Pipelines must succeed** |
-| skipped pipelines may be merged | Turn off **Skipped pipelines are considered successful** |
-| target freshness is not enforced natively | Use fast-forward or semi-linear merges, or enable merged results pipelines. |
-| approval settings or rules unavailable; GitLab Premium … | Approvals need GitLab Premium or Ultimate. |
-| approvals are not reset on push | **Approval settings → When a commit is added: Remove all approvals** |
-| target branch is not protected / allows force push | **Settings → Repository → Protected branches** |
-| native approval rule "…" requires additional human approval | The bot can't complete that rule alone. Humans approve, or add the bot to the rule. |
+Forge protection settings (merge method, pipelines must succeed, approval
+reset, protected branches, approval rules) never withhold an approval.
+`reviewd doctor` reports them as warnings.
 
 ## Pipelines and checks
 
@@ -52,7 +44,6 @@ review does.
 | head pipeline has not succeeded | Wait for it, or fix it. |
 | required trusted job "…" is missing / failed or did not run / is ambiguous | Check the job name in `gitlab.required_jobs` (or the policy's `required_checks`). Parallel jobs are named `test 1/3`. |
 | required check failed or has an untrusted producer/revision (GitHub) | Check the app ID in `github.required_checks`. |
-| native strict protections or required human review evidence are not established (GitHub) | Turn on **Require branches to be up to date**, and see the GitHub note on required reviews. |
 
 ## Risk
 

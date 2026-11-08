@@ -3,9 +3,10 @@
 This guide takes one GitLab project from nothing to automatic, revision-bound
 approvals. Each step can be checked, and nothing writes to GitLab until step 10.
 
-!!! info "You need GitLab Premium or Ultimate"
-    Approval rules and approval settings are Premium features. On GitLab Free,
-    reviews and comments work, but approvals are always withheld.
+!!! info "Works on every GitLab tier"
+    Reviews, comments and approvals all work on GitLab Free, Premium and
+    Ultimate. ChangeHarbor approves whenever `publish.approvals` is `submit`
+    and its own evidence holds. It doesn't depend on your merge settings.
 
 ## 1. Install ChangeHarbor
 
@@ -50,24 +51,23 @@ means. Move it to a project MR authors can't edit:
 This is `gitlab.ci_trust: external_config`, the default. If you can't move the
 file, see `unchanged_config` in the [reference](../configuration/reference.md#gitlab).
 
-## 4. Configure merge requests
+## 4. Choose merge settings (recommended, not required)
 
-In **Settings → Merge requests**:
+ChangeHarbor approves regardless of these settings. They decide what GitLab
+itself enforces at merge time, so they're good practice:
 
-| Setting | Value | Why |
+| Setting (**Settings → Merge requests**) | Recommended | Without it |
 | --- | --- | --- |
-| Merge method | **Fast-forward merge** or **Merge commit with semi-linear history** (or enable **merged results pipelines**) | An MR can't merge on a stale target. |
-| Merge checks → **Pipelines must succeed** | On | The pipeline gates the merge. |
-| **Skipped pipelines are considered successful** | Off | A skipped pipeline proves nothing. |
-| Approval settings → **When a commit is added** | **Remove all approvals** | An approval only ever covers the commit ChangeHarbor reviewed. |
-| Approval rules | Include the bot (or use *All eligible users*) with 1 required approval | The bot's approval has to count. |
+| Merge method | **Fast-forward** or **semi-linear**, or **merged results pipelines** | An MR can merge onto a newer target than the one reviewed. ChangeHarbor withdraws its approval when the target moves. |
+| **Pipelines must succeed** | On | GitLab lets a failing MR merge. ChangeHarbor still only approves after its required jobs pass. |
+| **Skipped pipelines are considered successful** | Off | Skipped pipelines count for merging, though never for ChangeHarbor. |
+| Approval settings → **When a commit is added** | **Remove all approvals** | Other people's approvals survive new commits. ChangeHarbor withdraws *its own* approval whenever the MR changes. |
+| Approval rules | Make the bot an eligible approver | The bot's approval doesn't count toward that rule. |
 
-Then in **Settings → Repository → Protected branches**, protect `main` and
-turn **Allowed to force push** off.
+In **Settings → Repository → Protected branches**, protecting `main` with
+**Allowed to force push** off keeps history from changing under reviewed code.
 
-!!! tip
-    If a rule needs more approvals than the bot can give, ChangeHarbor
-    withholds rather than giving a partial approval. Humans approve as usual.
+`reviewd doctor` reports each of these as a warning when it's off.
 
 ## 5. Create a mirror
 
@@ -128,9 +128,10 @@ where it came from.
 reviewd doctor
 ```
 
-`doctor` checks the token, the bot's role, every setting from steps 3–4, the
-approval rules and the mirror. It writes nothing. Fix anything marked `error`;
-`warning`s explain where approvals will be withheld.
+`doctor` checks the token, the bot's role, the CI configuration, the settings
+from step 4, the approval rules and the mirror. It writes nothing. Fix anything
+marked `error`: ChangeHarbor can't work until you do. `warning`s describe
+protection GitLab itself isn't providing.
 
 ## 9. Try it in shadow mode
 
@@ -172,9 +173,10 @@ webhook**:
 - **Triggers**: **Merge request events**, and **Push events** filtered to
   `main`
 
-From then on each MR update is reviewed, commented and (when eligible)
-approved. Each push to `main` re-checks earlier approvals and withdraws any
-whose MR or target moved.
+From then on each MR update first withdraws ChangeHarbor's approval of the
+previous head, then reviews, comments and (when eligible) approves the new
+one. Each push to `main` re-checks earlier approvals and withdraws any whose
+target moved.
 
 ## Fork merge requests
 

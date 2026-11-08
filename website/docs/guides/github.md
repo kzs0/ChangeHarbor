@@ -3,12 +3,11 @@
 This guide sets up one GitHub repository for reviews, summary comments and
 revision-bound approvals.
 
-!!! note "What differs from GitLab"
-    `reviewd doctor` and `reviewd revalidate` are GitLab-only today. On
-    GitHub, ChangeHarbor withholds approval when branch protection *requires*
-    approving reviews, because it can't prove its approval satisfies them.
-    Approvals are most useful alongside a ruleset or process that reads
-    them.
+!!! note "Approvals don't depend on branch protection"
+    ChangeHarbor approves whenever `publish.approvals` is `submit` and its own
+    evidence holds: trusted checks, risk policy, unchanged commits. When the
+    PR moves, it dismisses its own review. `reviewd doctor` is GitLab-only
+    today.
 
 ## 1. Install ChangeHarbor
 
@@ -27,7 +26,6 @@ Use either a **machine user** with a fine-grained personal access token, or a
     - **Pull requests**: Read and write (comments and approvals)
     - **Contents**: Read
     - **Checks** and **Commit statuses**: Read
-    - **Administration**: Read (to read branch protection)
 
     ```sh
     export GITHUB_TOKEN=github_pat_...
@@ -47,16 +45,16 @@ Use either a **machine user** with a fine-grained personal access token, or a
     Put that number in `bot_user_id`. Minting and rotating installation tokens
     into `GITHUB_TOKEN` is up to your deployment.
 
-## 3. Protect the branch
+## 3. Protect the branch (recommended)
 
-In **Settings → Branches → Branch protection rules** (or a ruleset) for
-`main`:
+ChangeHarbor approves either way. Branch protection decides what GitHub itself
+enforces at merge time. In **Settings → Branches** (or a ruleset) for `main`:
 
-- **Require status checks to pass**: on, with **Require branches to be up to
-  date** on (strict).
-- Select the checks that must pass.
-- **Require a pull request before merging → required approvals**: see the
-  note above.
+- **Require a pull request before merging** with **1** required approval, so
+  ChangeHarbor's approval (or a human's) gates the merge.
+- **Dismiss stale pull request approvals when new commits are pushed**, so
+  everyone's approvals follow the same rule ChangeHarbor applies to its own.
+- **Require status checks to pass**, with **Require branches to be up to date**.
 
 ## 4. Map required checks to their producers
 

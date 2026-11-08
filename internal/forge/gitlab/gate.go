@@ -25,26 +25,23 @@ type Expect struct {
 	ChangedPaths, CIPaths []string
 }
 
-// Facts are live GitLab observations. Known flags separate "unavailable"
-// (for example Premium-only endpoints on Free) from a definite false.
+// Facts are the live GitLab observations approval depends on. Native
+// protection settings are deliberately absent: approvals are submitted
+// whenever configured, and ChangeHarbor withdraws its own approval when a
+// merge request moves (see revalidation) instead of relying on the forge.
 type Facts struct {
-	Change                Change
-	UserID                string
-	Project               ProjectSettings
-	ApprovalSettings      ApprovalSettings
-	ApprovalSettingsKnown bool
-	Branch                ProtectedBranch
-	Rules                 []ApprovalRule
-	RulesKnown            bool
-	Pipeline              *Pipeline
-	PipelineParents       []string
-	Jobs                  []Job
+	Change          Change
+	UserID          string
+	Project         ProjectSettings
+	Pipeline        *Pipeline
+	PipelineParents []string
+	Jobs            []Job
 }
 
 func unavailable(e error) bool { c := statusCode(e); return c == 403 || c == 404 }
 
-// Collect reads every fact Evaluate needs. Premium-only endpoints that answer
-// 403/404 are recorded as unknown; any other failure is returned.
+// Collect reads every fact Evaluate needs. None of its endpoints are
+// Premium-only, so it works on every GitLab tier.
 func (c *Client) Collect(ctx context.Context, x Expect) (Facts, error) {
 	var f Facts
 	var e error
@@ -55,19 +52,6 @@ func (c *Client) Collect(ctx context.Context, x Expect) (Facts, error) {
 		return f, e
 	}
 	if f.Project, e = c.ProjectSettings(ctx, x.ProjectID); e != nil {
-		return f, e
-	}
-	if f.ApprovalSettings, e = c.ApprovalSettings(ctx, x.ProjectID); e == nil {
-		f.ApprovalSettingsKnown = true
-	} else if !unavailable(e) {
-		return f, e
-	}
-	if f.Branch, e = c.ProtectedBranch(ctx, x.ProjectID, x.TargetBranch); e != nil {
-		return f, e
-	}
-	if f.Rules, e = c.ApprovalState(ctx, x.ProjectID, x.IID); e == nil {
-		f.RulesKnown = true
-	} else if !unavailable(e) {
 		return f, e
 	}
 	if f.Change.HeadPipelineID == 0 {
@@ -108,33 +92,9 @@ func Evaluate(f Facts, x Expect) (map[string]bool, string) {
 		return nil, "GitLab merge request diff is not computed against the live target"
 	case x.BotUserID == "" || f.UserID != x.BotUserID:
 		return nil, "credential does not act as the configured bot user"
-	case !f.Project.PipelineMustSucceed:
-		return nil, "pipelines are not required to succeed before merge"
-	case f.Project.AllowSkippedPipeline:
-		return nil, "skipped pipelines may be merged"
-	case !(f.Project.MergeMethod == "ff" || f.Project.MergeMethod == "rebase_merge" || f.Project.MergedResultsPipelines):
-		return nil, "target freshness is not enforced natively (fast-forward, semi-linear or merged results pipelines required)"
-	case !f.ApprovalSettingsKnown || !f.RulesKnown:
-		return nil, "approval settings or rules unavailable; GitLab Premium approval controls are required"
-	case !f.ApprovalSettings.ResetOnPush || f.ApprovalSettings.SelectiveCodeOwnerRemovals:
-		return nil, "approvals are not reset on push"
-	case !f.Branch.Protected:
-		return nil, "target branch is not protected"
-	case f.Branch.AllowForcePush:
-		return nil, "target branch allows force push"
 	}
 	if reason := ciTrust(f.Project.CIConfigPath, x); reason != "" {
 		return nil, reason
-	}
-	for _, r := range f.Rules {
-		if r.Approved || r.Required <= 0 {
-			continue
-		}
-		eligible := r.Type == "any_approver" || slices.Contains(r.EligibleIDs, x.BotUserID)
-		left := r.Required - len(r.ApprovedByIDs)
-		if !eligible || left > 1 || slices.Contains(r.ApprovedByIDs, x.BotUserID) {
-			return nil, fmt.Sprintf("native approval rule %q requires additional human approval", r.Name)
-		}
 	}
 	p := f.Pipeline
 	if ch.HeadPipelineID == 0 || p == nil {

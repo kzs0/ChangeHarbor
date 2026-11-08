@@ -41,7 +41,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if in.Message == "" || in.Event != "DISMISS" {
 			f.t.Errorf("dismissal body %+v", in)
 		}
-		f.dismiss = append(f.dismiss, strings.Split(r.URL.Path, "/")[6])
+		f.dismiss = append(f.dismiss, strings.Split(r.URL.Path, "/")[7])
 		fmt.Fprint(w, `{"id":77,"state":"DISMISSED"}`)
 	default:
 		f.t.Errorf("unexpected GitHub request %s %s", r.Method, r.URL.Path)

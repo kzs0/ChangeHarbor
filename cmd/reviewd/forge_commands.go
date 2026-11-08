@@ -641,10 +641,8 @@ func publishRun(ctx context.Context, c forgeConfig, s *storage.Store, runID stri
 	if out.State != "published" {
 		return out, 4, nil
 	}
-	if c.Provider == "gitlab" {
-		if e = recordActiveApproval(ctx, s, c, runID, p.Capture); e != nil {
-			return out, 1, e
-		}
+	if e = recordActiveApproval(ctx, s, c, runID, out.RemoteID, p.Capture); e != nil {
+		return out, 1, e
 	}
 	return out, 0, nil
 }
@@ -675,14 +673,6 @@ func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, e
 		g.reason = reason
 		return obs, e
 	}
-	protection, e := g.client().Protection(ctx, g.c.Owner, g.c.Repository, g.c.Branch)
-	if e != nil {
-		return obs, e
-	}
-	if !protection.Known || !protection.StrictChecks || protection.RequiredReviews {
-		g.reason = "native strict protections or required human review evidence are not established"
-		return obs, nil
-	}
 	checks, e := g.client().Checks(ctx, g.c.Owner, g.c.Repository, c.Head, 10, 100)
 	if e != nil {
 		return obs, e
@@ -704,12 +694,6 @@ func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, e
 			return obs, nil
 		}
 		passed[name] = true
-	}
-	for _, name := range protection.RequiredContexts {
-		if !passed[name] {
-			g.reason = "native required check has no verified trusted producer mapping"
-			return obs, nil
-		}
 	}
 	obs.ChecksPass, g.reason, e = hostPolicyAllows(ctx, g.c, g.result, d, passed)
 	return obs, e
@@ -978,14 +962,16 @@ func commentWriteError(e error) error {
 	return e
 }
 
-// activeApproval indexes a published GitLab approval for revalidationResult.
+// activeApproval indexes a published approval for revalidation. RemoteID is
+// the GitHub review to dismiss (GitLab approvals are per user, not per ID).
 type activeApproval struct {
 	RunID, Head, Target string
+	RemoteID            string `json:",omitempty"`
 }
 
 func approvalIndexKey(c forgeConfig) string { return c.Provider + ":" + c.RepositoryID }
 
-func recordActiveApproval(ctx context.Context, s *storage.Store, c forgeConfig, runID string, captured forgeCapture) error {
+func recordActiveApproval(ctx context.Context, s *storage.Store, c forgeConfig, runID, remoteID string, captured forgeCapture) error {
 	_, e := s.Update(ctx, "active_approvals", approvalIndexKey(c), func(old []byte, exists bool) ([]byte, error) {
 		index := map[int]activeApproval{}
 		if exists {
@@ -993,7 +979,7 @@ func recordActiveApproval(ctx context.Context, s *storage.Store, c forgeConfig, 
 				return nil, e
 			}
 		}
-		index[captured.Number] = activeApproval{RunID: runID, Head: captured.Head, Target: captured.Target}
+		index[captured.Number] = activeApproval{RunID: runID, Head: captured.Head, Target: captured.Target, RemoteID: remoteID}
 		return json.Marshal(index)
 	})
 	return e
@@ -1006,19 +992,19 @@ type revalidationResult struct {
 func revalidateCommand(ctx context.Context, args []string) (int, error) {
 	f := flag.NewFlagSet("revalidate", flag.ContinueOnError)
 	cf := addConfigFlags(f)
-	repo := f.String("repo", "", "repository name in changeharbor.yaml (default: every GitLab repository)")
+	repo := f.String("repo", "", "repository name in changeharbor.yaml (default: every repository)")
 	if f.Parse(args) != nil || f.NArg() != 0 {
 		return 2, nil
 	}
 	return withWriter(ctx, cf, func(sel selection, s *storage.Store) (any, int, error) {
-		targets, e := sel.repositories(*repo, "gitlab")
+		targets, e := sel.repositories(*repo, "")
 		if e != nil {
 			return nil, 2, e
 		}
 		out := map[string]revalidationResult{}
 		var errs []error
 		for _, c := range targets {
-			r, e := revalidateRun(ctx, c, s)
+			r, e := revalidateRun(ctx, c, s, 0)
 			out[c.name] = r
 			errs = append(errs, e)
 		}
@@ -1029,15 +1015,14 @@ func revalidateCommand(ctx context.Context, args []string) (int, error) {
 	})
 }
 
-// revalidateRun re-reads every indexed GitLab approval. Merged or closed MRs
-// are dropped; when the head or target moved the bot's approval is withdrawn
-// (idempotently) and the entry dropped; current approvals are kept. It
-// assumes the caller holds the state lock.
-func revalidateRun(ctx context.Context, c forgeConfig, s *storage.Store) (revalidationResult, error) {
+// revalidateRun re-reads indexed approvals (all, or only change number
+// `only`). Merged or closed changes are dropped. When the head or target
+// moved, ChangeHarbor withdraws its own approval (GitLab unapprove, GitHub
+// review dismissal; both idempotent) and drops the entry, so an approval never
+// outlives the commit it was given for, whatever the forge's protections.
+// Current approvals are kept. It assumes the caller holds the state lock.
+func revalidateRun(ctx context.Context, c forgeConfig, s *storage.Store, only int) (revalidationResult, error) {
 	out := revalidationResult{Revoked: []int{}, Dropped: []int{}, Kept: []int{}}
-	if c.Provider != "gitlab" {
-		return out, errors.New("approval revalidationResult is supported for GitLab")
-	}
 	b, e := s.Load(ctx, "active_approvals", approvalIndexKey(c))
 	if errors.Is(e, sql.ErrNoRows) {
 		return out, nil
@@ -1051,30 +1036,27 @@ func revalidateRun(ctx context.Context, c forgeConfig, s *storage.Store) (revali
 	}
 	numbers := make([]int, 0, len(index))
 	for n := range index {
-		numbers = append(numbers, n)
+		if only == 0 || n == only {
+			numbers = append(numbers, n)
+		}
 	}
 	slices.Sort(numbers)
-	client := gitlabClient(c)
 	var errs []error
 	done := map[int]bool{}
 	for _, n := range numbers {
 		a := index[n]
-		ch, err := client.Change(ctx, c.ProjectID, n)
+		open, head, target, err := liveChange(ctx, c, n)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("merge request %d: %w", n, err))
+			errs = append(errs, fmt.Errorf("change %d: %w", n, err))
 			continue
 		}
 		switch {
-		case ch.State != "opened":
+		case !open:
 			out.Dropped = append(out.Dropped, n)
 			done[n] = true
-		case ch.HeadOID != a.Head || ch.TargetOID != a.Target:
-			approved, err := client.ApprovedBy(ctx, c.ProjectID, n, c.BotUserID)
-			if err == nil && approved {
-				err = client.Unapprove(ctx, c.ProjectID, n)
-			}
-			if err != nil {
-				errs = append(errs, fmt.Errorf("merge request %d: %w", n, err))
+		case head != a.Head || target != a.Target:
+			if err = withdrawApproval(ctx, c, n, a); err != nil {
+				errs = append(errs, fmt.Errorf("change %d: %w", n, err))
 				continue
 			}
 			out.Revoked = append(out.Revoked, n)
@@ -1103,6 +1085,30 @@ func revalidateRun(ctx context.Context, c forgeConfig, s *storage.Store) (revali
 		}
 	}
 	return out, errors.Join(errs...)
+}
+
+func liveChange(ctx context.Context, c forgeConfig, n int) (open bool, head, target string, err error) {
+	if c.Provider == "gitlab" {
+		ch, e := gitlabClient(c).Change(ctx, c.ProjectID, n)
+		return ch.State == "opened", ch.HeadOID, ch.TargetOID, e
+	}
+	ch, e := gh.NewClient(c.APIBase, os.Getenv(c.TokenEnv), nil, 1<<20).Change(ctx, c.Owner, c.Repository, n)
+	return ch.State != "closed", ch.HeadOID, ch.TargetOID, e
+}
+
+func withdrawApproval(ctx context.Context, c forgeConfig, n int, a activeApproval) error {
+	if c.Provider == "gitlab" {
+		approved, e := gitlabClient(c).ApprovedBy(ctx, c.ProjectID, n, c.BotUserID)
+		if e == nil && approved {
+			e = gitlabClient(c).Unapprove(ctx, c.ProjectID, n)
+		}
+		return e
+	}
+	if a.RemoteID == "" {
+		return nil
+	}
+	return gh.NewClient(c.APIBase, os.Getenv(c.TokenEnv), nil, 1<<20).DismissReview(ctx, c.Owner, c.Repository, n, a.RemoteID,
+		"ChangeHarbor: the reviewed commit or target changed; this approval no longer applies.")
 }
 
 type doctorReport struct {

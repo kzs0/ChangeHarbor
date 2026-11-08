@@ -19,7 +19,7 @@ Commands that read `changeharbor.yaml` accept `--config FILE` and
 | `reviewd config check` | Validates and prints the effective config, where each value came from, and the keys that invalidate reviews. |
 | `reviewd config schema` | Prints the JSON Schema. |
 | `reviewd config migrate --forge-config FILE [--server-config FILE]` | Converts legacy JSON configs to `changeharbor.yaml` and a lock, offline. |
-| `reviewd doctor [--repo NAME]` | Read-only GitLab preflight: token, role, settings, rules, CI trust, mirror. |
+| `reviewd doctor [--repo NAME]` | Read-only GitLab preflight: errors for what ChangeHarbor needs (token, role, CI trust, mirror), warnings for forge protections that are off. |
 
 ## Reviewing and publishing
 
@@ -28,7 +28,7 @@ Commands that read `changeharbor.yaml` accept `--config FILE` and
 | `reviewd review --url MR_OR_PR_URL` | Reviews a change captured from the forge API. Also `--model-config`/`--response` to override the configured model. |
 | `reviewd comment --run RUN_ID` | Creates or updates the owned summary comment (per `publish.comments`). |
 | `reviewd publish --run RUN_ID` | Approves, or reports would-approve/would-withhold (per `publish.approvals`). |
-| `reviewd revalidate [--repo NAME]` | Withdraws GitLab approvals whose MR head or target moved. |
+| `reviewd revalidate [--repo NAME]` | Withdraws ChangeHarbor's approvals whose MR/PR head or target moved (GitLab unapprove, GitHub review dismissal). |
 | `reviewd serve --config FILE` | Runs the webhook service. See [Run the service](../guides/service.md). |
 
 ## Local and offline tools

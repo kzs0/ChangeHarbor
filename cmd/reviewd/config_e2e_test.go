@@ -111,9 +111,9 @@ func TestUnifiedShadowApprovalsEvaluateWithoutWriting(t *testing.T) {
 	if code != 0 || p.State != "shadow" || !strings.Contains(p.Reason, "would approve") || len(u.fake.writes) != 0 || u.fake.requests == before {
 		t.Fatalf("shadow %d %+v %s writes %v", code, p, stderr, u.fake.writes)
 	}
-	u.fake.protected = `{"name":"main","allow_force_push":true}`
+	u.fake.pipeline["status"] = "failed"
 	code, out, _ = u.cli("publish", "--run", run)
-	if p := decode(t, out); code != 0 || p.State != "shadow" || !strings.Contains(p.Reason, "would withhold") || !strings.Contains(p.Reason, "force push") || len(u.fake.writes) != 0 {
+	if p := decode(t, out); code != 0 || p.State != "shadow" || !strings.Contains(p.Reason, "would withhold") || !strings.Contains(p.Reason, "has not succeeded") || len(u.fake.writes) != 0 {
 		t.Fatalf("shadow withhold %d %+v", code, p)
 	}
 }

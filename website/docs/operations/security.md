@@ -18,12 +18,14 @@ more. These are the rules it enforces in code.
 - **No execution.** Source is read with git plumbing, with hooks, external
   diffs and text conversion disabled. The model has no tools.
 - **Revision-bound approvals.** Approvals carry the reviewed commit
-  (`commit_id` on GitHub, `sha` on GitLab), so a newer push can't inherit
-  them. GitLab must also reset approvals on push.
+  (`commit_id` on GitHub, `sha` on GitLab).
+- **ChangeHarbor withdraws its own approvals.** On every MR/PR event, before
+  reviewing a new head, and after every target push, ChangeHarbor unapproves
+  (GitLab) or dismisses its review (GitHub) wherever the head or target moved
+  since it approved. Approvals don't depend on forge protection settings, so
+  this holds even when the forge keeps approvals on push.
 - **Live re-checks.** Before every write, ChangeHarbor re-reads the forge and
   withholds if the head, target, policy or configuration changed.
-- **Withdrawals.** On GitLab, approvals whose MR or target later moved are
-  revoked (`reviewd revalidate`, run automatically by the service).
 - **Trusted CI.** A check counts only if a trusted producer ran it on the
   reviewed commit. On GitLab, the pipeline definition itself must be out of
   the author's reach (`gitlab.ci_trust`).

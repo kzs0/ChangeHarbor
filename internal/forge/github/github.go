@@ -30,7 +30,9 @@ func NewClient(baseURL, token string, httpClient *http.Client, maxBytes int64) *
 	return &Client{strings.TrimRight(baseURL, "/"), token, httpClient, maxBytes}
 }
 
-type Change struct{ RepositoryID, SourceRepositoryID, HeadOID, TargetOID string }
+// Change is a pull request's identity. State is "open" or "closed" (empty
+// when the response omits it).
+type Change struct{ RepositoryID, SourceRepositoryID, HeadOID, TargetOID, State string }
 
 var segment = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 var oid = regexp.MustCompile(`^[A-Fa-f0-9]+$`)
@@ -81,6 +83,7 @@ func (c *Client) Change(ctx context.Context, owner, repo string, number int) (Ch
 	}
 	var raw struct {
 		ID         json.Number `json:"id"`
+		State      string      `json:"state"`
 		Head, Base ref
 	}
 	if e = json.Unmarshal(b, &raw); e != nil {
@@ -90,7 +93,7 @@ func (c *Client) Change(ctx context.Context, owner, repo string, number int) (Ch
 	if !validID(raw.ID) || raw.Head.Repo == nil || raw.Base.Repo == nil || !validID(raw.Head.Repo.ID) || !validID(raw.Base.Repo.ID) || !oid.MatchString(raw.Head.SHA) || !oid.MatchString(raw.Base.SHA) {
 		return Change{}, errors.New("missing or invalid immutable source identity")
 	}
-	return Change{RepositoryID: raw.Base.Repo.ID.String(), SourceRepositoryID: raw.Head.Repo.ID.String(), HeadOID: raw.Head.SHA, TargetOID: raw.Base.SHA}, nil
+	return Change{RepositoryID: raw.Base.Repo.ID.String(), SourceRepositoryID: raw.Head.Repo.ID.String(), HeadOID: raw.Head.SHA, TargetOID: raw.Base.SHA, State: raw.State}, nil
 }
 
 type Check struct{ Name, Producer, OID, Conclusion string }

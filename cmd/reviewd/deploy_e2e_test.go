@@ -16,6 +16,7 @@ import (
 
 	"github.com/kzs0/reviewd/internal/jobs"
 	"github.com/kzs0/reviewd/internal/statelock"
+	"github.com/kzs0/reviewd/internal/storage"
 )
 
 // --- 1. CI configuration trust ---
@@ -448,5 +449,29 @@ func TestMREventWithdrawsApprovalBeforeReviewingNewHead(t *testing.T) {
 	}
 	if unapprove > approve {
 		t.Fatalf("withdrawal must precede the new approval: %v", x.fake.writes)
+	}
+}
+
+// Event-time withdrawal touches only the event's MR: an unrelated indexed MR
+// (here one the forge can't even serve) must not be queried or block review.
+func TestMREventRevalidatesOnlyThatChange(t *testing.T) {
+	x := publishedFixture(t)
+	s, e := storage.Open(x.state)
+	if e != nil {
+		t.Fatal(e)
+	}
+	c, _ := loadForgeConfig(x.config)
+	_, e = s.Update(context.Background(), "active_approvals", approvalIndexKey(c), func(old []byte, _ bool) ([]byte, error) {
+		index := map[int]activeApproval{}
+		json.Unmarshal(old, &index)
+		index[99] = activeApproval{RunID: "other", Head: x.head, Target: x.base}
+		return json.Marshal(index)
+	})
+	s.Close()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e := processEvent(context.Background(), serverFor(x), jobs.Job{ID: "gitlab:d3", Kind: "review"}, mrHook(x.head)); e != nil {
+		t.Fatalf("unrelated MR blocked the event: %v", e)
 	}
 }

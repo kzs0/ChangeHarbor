@@ -529,18 +529,17 @@ func processEvent(ctx context.Context, c serverConfig, j jobs.Job, b []byte) err
 		if e := ingestEvent(ctx, c, o, event); e != nil {
 			return e
 		}
-		if forge != nil && forge.Provider == "gitlab" && forge.BotUserID != "" {
-			s, e := storage.Open(c.State)
-			if e != nil {
-				return e
-			}
-			defer s.Close()
-			_, e = revalidateRun(ctx, *forge, s)
-			return e
+		if forge != nil {
+			return revalidateEvent(ctx, c, *forge, 0)
 		}
 		return nil
 	}
 	if event.Kind == "review" && forge != nil {
+		// Withdraw any approval for an older head before reviewing the new
+		// one, whatever the forge's own reset-on-push settings.
+		if e := revalidateEvent(ctx, c, *forge, event.ChangeNumber); e != nil {
+			return e
+		}
 		return automateChange(ctx, c, o, *forge, event.ChangeNumber)
 	}
 	if event.Kind != "review" {
@@ -632,4 +631,14 @@ func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc 
 		}
 	}
 	return nil
+}
+
+func revalidateEvent(ctx context.Context, c serverConfig, fc forgeConfig, only int) error {
+	s, e := storage.Open(c.State)
+	if e != nil {
+		return e
+	}
+	defer s.Close()
+	_, e = revalidateRun(ctx, fc, s, only)
+	return e
 }
