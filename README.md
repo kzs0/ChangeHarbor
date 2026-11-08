@@ -52,32 +52,82 @@ name. Request intent, attempts, exact responses and usage are retained locally;
 uncertain completion is never silently replayed. Unknown usage/price remains
 unknown. See [HTTP contract](internal/model/CONTRACT.md).
 
+### Configuration
+
+One reviewed file, `reviewd.json`, configures every repository, and a
+committed `reviewd.lock.json` pins identities resolved from the forge API
+(design: [docs/design/config.md](docs/design/config.md)).
+
 ```sh
-bin/reviewd review --url https://github.com/OWNER/REPO/pull/123 \
-  --forge-config /trusted/forge.json --model-config /trusted/model.json \
-  --state /data/reviewd
-bin/reviewd publish --run RUN_ID --forge-config /trusted/forge.json \
-  --state /data/reviewd
+bin/reviewd config init --url https://gitlab.com/group/app \
+  --mirror /mirrors/app.git --policy policies/app.json --token-env GITLAB_TOKEN
+bin/reviewd config check          # effective values, where each came from
+bin/reviewd doctor                # live GitLab preflight
 ```
 
-Forge configuration binds web/API host, provider repository IDs, permitted fork
-source ID, local mirror, policy and trusted CI producer IDs. Local mirrors must
-contain the captured commits. The default publish mode is shadow. Submission
-requires supported live protection/check facts and matching saved provenance;
-unknown native/human requirements withhold approval. No auto-merge occurs.
+```json
+{
+  "version": 1,
+  "$schema": "reviewd.schema.json",
+  "state": "/data/reviewd",
+  "models": { "default": "models/review.json" },
+  "repositories": {
+    "app": {
+      "url": "https://gitlab.com/group/app",
+      "token_env": "GITLAB_TOKEN",
+      "mirror": { "path": "/mirrors/app.git" },
+      "policy": "policies/app.json",
+      "publish": { "approvals": "submit", "comments": "post" }
+    }
+  }
+}
+```
+
+- Provider, web/API bases and path come from `url`. Project ID, default
+  branch, bot user and fork source are resolved by `reviewd config resolve`
+  into the lock; changing their inputs makes the lock stale and commands
+  refuse to run until it is resolved again.
+- Omitted keys use safe defaults: `publish.approvals` `shadow` (evaluate every
+  requirement, write nothing), `publish.comments` `shadow` (render only),
+  `mirror.sync` `auto` (fetch from `origin` when configured),
+  `gitlab.ci_trust` `external_config`, `gitlab.required_jobs` from the policy,
+  `branch` from the lock. Empty strings are errors. `off` disables a feature
+  entirely.
+- Relative paths resolve against the config file. `--config`, then
+  `$REVIEWD_CONFIG`, then `./reviewd.json` locates it; `--state`, then
+  `$REVIEWD_STATE`, then the file sets the state directory. Nothing else is
+  read from the environment except named secrets.
+- Only review identity (url, provider, api_url, fork_source, mirror path,
+  policy, branch) invalidates existing reviews; `config check` lists it.
+- `reviewd config schema` prints the JSON Schema; `config init` writes it next
+  to the config for editor completion.
+- Legacy `--forge-config` files still work for one release with a warning;
+  `reviewd config migrate --forge-config F [--server-config S]` converts them
+  offline and keeps existing reviews publishable.
+
+```sh
+bin/reviewd review --url https://gitlab.com/group/app/-/merge_requests/123
+bin/reviewd publish --run RUN_ID
+bin/reviewd comment --run RUN_ID
+bin/reviewd serve --config reviewd.json   # needs a "service" section
+```
+
+Local mirrors must contain the captured commits (or set `mirror.sync`).
+Submission requires supported live protection/check facts and matching saved
+provenance; unknown native/human requirements withhold approval. No
+auto-merge occurs.
 
 ### Review comments
 
 ```sh
-bin/reviewd comment --run RUN_ID --forge-config /trusted/forge.json \
-  --state /data/reviewd
+bin/reviewd comment --run RUN_ID
 ```
 
-Posts or updates one summary comment per PR/MR, owned by `bot_user_id` and
-identified by a stable `<!-- reviewd:summary ... -->` marker. Comments by any
-other author are never edited, even if they contain the marker. Off by
-default: set `"comment_mode": "post"` (and `bot_user_id`) to write; otherwise
-the command prints the body. Posting is withheld when the PR head or target
+Posts or updates one summary comment per PR/MR, owned by the bot user (from
+the lock, or `bot_user_id`) and identified by a stable
+`<!-- reviewd:summary ... -->` marker. Comments by any other author are never
+edited, even if they contain the marker. Set `publish.comments` to `post` to
+write; the default `shadow` prints the body. Posting is withheld when the PR head or target
 moved since the review. Intent is recorded before writing and ambiguous writes
 are reconciled by listing comments before any retry. Model-derived text is
 placed in a code fence, with control characters removed and line-leading `/`
@@ -87,31 +137,30 @@ cannot call `/user`); GitLab tokens are verified up front.
 
 ### GitLab submission
 
-GitLab forge configuration uses `project_id` (equal to `repository_id`),
-`repository` (the web path, e.g. `group/app`), `bot_user_id` (numeric user the
-token acts as; required for `submit`), optional `token_scheme`
-(`private-token` default, or `bearer`) and `required_checks` mapping job names
-to `project:<project_id>`. Mirrors must fetch
-`+refs/merge-requests/*/head:refs/merge-requests/*/head` and the target branch.
+GitLab repositories may set `token_scheme` (`private-token` default, or
+`bearer`) and a `gitlab` section. `gitlab.required_jobs` defaults to the
+policy's `required_checks`. Without `mirror.sync`, mirrors must fetch
+`+refs/merge-requests/*/head:refs/merge-requests/*/head` and the target branch
+themselves.
 
-`ci_trust` is required for GitLab approval: `external_config` (recommended)
-requires `ci_config_path` to load the pipeline from another project;
-`unchanged_config` withholds MRs that touch `.gitlab-ci.yml`, a local
-`ci_config_path` or any `ci_paths` glob. Optional `sync_remote` names a remote
-configured in the mirror; ChangeHarbor then fetches the target branch and MR
-head before reviewing and before every publication check.
+`gitlab.ci_trust` decides whether the head pipeline's definition is trusted:
+`external_config` (default, recommended) requires `ci_config_path` to load the
+pipeline from another project; `unchanged_config` withholds MRs that touch
+`.gitlab-ci.yml`, a local `ci_config_path` or any `gitlab.ci_paths` glob;
+`none` always withholds. With `mirror.sync`, ChangeHarbor fetches the target
+branch and MR head before reviewing and before every publication check.
 
 ```sh
-bin/reviewd doctor --forge-config /trusted/forge.json      # read-only preflight
-bin/reviewd revalidate --forge-config /trusted/forge.json --state /data/reviewd
+bin/reviewd doctor                 # read-only preflight, every GitLab repository
+bin/reviewd revalidate             # withdraw approvals whose MR moved
 ```
 
 `doctor` checks token identity/scope/expiry, the bot's role, project merge and
 approval settings, branch protection, approval rules, CI trust and the mirror.
 `revalidate` withdraws ChangeHarbor approvals whose MR head or target moved
-since approval; `serve` runs it after each push to the target branch. With a
-`forge_config` in a `serve` repository mapping, MR webhooks run the whole flow
-(API-captured review, comment, publish) per that configuration's modes. One
+since approval; `serve` runs it after each push to the target branch. Under
+`serve`, MR webhooks run the whole flow (API-captured review, comment, publish)
+per each repository's `publish` settings. One
 process may write a state directory at a time (`<state>/writer.lock`).
 
 Approval is submitted only when live GitLab facts establish: MR open, not draft

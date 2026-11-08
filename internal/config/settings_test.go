@@ -22,7 +22,7 @@ func TestMinimalSettingsGetSafeDefaults(t *testing.T) {
 		t.Fatal(e)
 	}
 	r := s.Repositories["app"]
-	if s.State != ".reviewd" || r.Provider != "gitlab" || r.Publish.Approvals != "shadow" || r.Publish.Comments != "shadow" ||
+	if s.State != "/base/.reviewd" || r.Provider != "gitlab" || r.Publish.Approvals != "shadow" || r.Publish.Comments != "shadow" ||
 		r.Mirror.Sync != "auto" || r.TokenScheme != "private-token" || r.GitLab.CITrust != "external_config" {
 		t.Fatalf("%+v %+v", s, r)
 	}
@@ -102,7 +102,7 @@ func TestErrorsNamePathAndSuggest(t *testing.T) {
 }
 
 func TestModelDefaultsToNamedDefault(t *testing.T) {
-	s, src, e := decode(t, strings.Replace(strings.Replace(minimal, `"response":"/r.json"`, ``, 1), `"version":1`, `"version":1,"models":{"default":"models/review.json"}`, 1))
+	s, src, e := decode(t, strings.Replace(strings.Replace(minimal, `,"response":"/r.json"`, ``, 1), `"version":1`, `"version":1,"models":{"default":"models/review.json"}`, 1))
 	if e != nil {
 		t.Fatal(e)
 	}

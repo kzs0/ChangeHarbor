@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "reviewd configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "repositories"
+  ],
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Configuration format version. Must be 1."
+    },
+    "$schema": {
+      "type": "string",
+      "description": "Path or URL of this schema, for editor completion."
+    },
+    "state": {
+      "type": "string",
+      "description": "State directory. Default .reviewd. Overridden by REVIEWD_STATE or --state."
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "address"
+      ],
+      "description": "Webhook service (reviewd serve).",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "Loopback listen address, e.g. 127.0.0.1:8080."
+        },
+        "github_secret_env": {
+          "type": "string",
+          "description": "Environment variable holding the GitHub webhook secret."
+        },
+        "gitlab_secret_env": {
+          "type": "string",
+          "description": "Environment variable holding the GitLab webhook token."
+        },
+        "context_rebuild_interval": {
+          "type": "string",
+          "description": "Snapshot rebuild interval, e.g. 24h."
+        },
+        "reconciliation_interval": {
+          "type": "string",
+          "description": "Journal reconciliation interval, e.g. 5m."
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Named model config files, e.g. {\"default\": \"models/review.json\"}."
+    },
+    "repositories": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "token_env",
+          "mirror",
+          "policy"
+        ],
+        "description": "A repository reviewd serves, keyed by a short lowercase name.",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Web URL of the repository, e.g. https://gitlab.com/group/app. Provider, web and API bases and path are derived from it."
+          },
+          "provider": {
+            "type": "string",
+            "description": "github or gitlab. Required only for self-managed hosts.",
+            "enum": [
+              "github",
+              "gitlab"
+            ]
+          },
+          "api_url": {
+            "type": "string",
+            "description": "API base override, e.g. for a GitLab installed under a path prefix."
+          },
+          "token_env": {
+            "type": "string",
+            "description": "Environment variable holding the forge token."
+          },
+          "token_scheme": {
+            "type": "string",
+            "description": "GitLab only. How the token is sent. Default private-token.",
+            "enum": [
+              "private-token",
+              "bearer"
+            ]
+          },
+          "bot_user_id": {
+            "type": "string",
+            "description": "Numeric user ID the token acts as. Resolved from /user when omitted; set it for GitHub App tokens."
+          },
+          "fork_source": {
+            "type": "string",
+            "description": "Path of the one fork whose merge requests are accepted, e.g. contributors/app. Resolved to an ID in the lock."
+          },
+          "mirror": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path"
+            ],
+            "description": "Local git mirror reviewd reads source from.",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Mirror directory. Relative paths resolve against this file."
+              },
+              "sync": {
+                "type": "string",
+                "description": "auto (fetch from origin when configured), none, or a configured remote name. Default auto."
+              }
+            }
+          },
+          "branch": {
+            "type": "string",
+            "description": "Target branch. Default: the repository's default branch, pinned in the lock."
+          },
+          "policy": {
+            "type": "string",
+            "description": "Merge risk policy file."
+          },
+          "model": {
+            "type": "string",
+            "description": "Name of a model in models. Default: default, when defined."
+          },
+          "response": {
+            "type": "string",
+            "description": "Offline model response fixture (testing). Mutually exclusive with model."
+          },
+          "publish": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "What reviewd may write to the forge.",
+            "properties": {
+              "approvals": {
+                "type": "string",
+                "description": "off, shadow (evaluate everything, write nothing) or submit. Default shadow.",
+                "enum": [
+                  "off",
+                  "shadow",
+                  "submit"
+                ]
+              },
+              "comments": {
+                "type": "string",
+                "description": "off, shadow (render only) or post. Default shadow.",
+                "enum": [
+                  "off",
+                  "shadow",
+                  "post"
+                ]
+              }
+            }
+          },
+          "gitlab": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "GitLab-only settings.",
+            "properties": {
+              "ci_trust": {
+                "type": "string",
+                "description": "How the head pipeline's definition is trusted. Default external_config.",
+                "enum": [
+                  "external_config",
+                  "unchanged_config",
+                  "none"
+                ]
+              },
+              "ci_paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "With unchanged_config: globs of files that define job behaviour."
+              },
+              "required_jobs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Job names that must succeed. Default: the policy's required_checks."
+              }
+            }
+          },
+          "github": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "GitHub-only settings.",
+            "properties": {
+              "required_checks": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Check name to trusted GitHub App ID."
+              }
+            }
+          },
+          "summary": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "model",
+              "limits"
+            ],
+            "description": "Background summary generation.",
+            "properties": {
+              "model": {
+                "type": "string",
+                "description": "Name of a model in models."
+              },
+              "limits": {
+                "type": "object",
+                "description": "Summary limits (see contextbuild.SummaryLimits)."
+              }
+            }
+          }
+        }
+      },
+      "description": "Repositories by name."
+    }
+  }
+}

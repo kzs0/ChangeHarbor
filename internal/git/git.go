@@ -230,3 +230,13 @@ func (r Reader) Fetch(ctx context.Context, remote string, refspecs ...string) er
 	_, e := r.run(ctx, args...)
 	return e
 }
+
+// HasRemote reports whether the repository's own configuration defines the
+// named remote.
+func (r Reader) HasRemote(ctx context.Context, name string) bool {
+	if !remoteName.MatchString(name) {
+		return false
+	}
+	_, e := r.run(ctx, "config", "--local", "--get", "remote."+name+".url")
+	return e == nil
+}

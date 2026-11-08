@@ -57,7 +57,24 @@ type forgeConfig struct {
 	CITrust    string   `json:"ci_trust,omitempty"`
 	CIPaths    []string `json:"ci_paths,omitempty"`
 	SyncRemote string   `json:"sync_remote,omitempty"`
+
+	// Set only when compiled from reviewd.json.
+	name, response, modelConfig string
 }
+
+// reviewIdentity is everything that determines what a review saw. Only it is
+// digested into review provenance, so publication settings can never
+// invalidate a review and a migrated configuration keeps its reviews.
+type reviewIdentity struct {
+	Provider, WebBase, APIBase, Owner, Repository string
+	ProjectID, RepositoryID, SourceRepositoryID   string
+	RepoPath, PolicyFile, Branch                  string
+}
+
+func (c forgeConfig) identity() reviewIdentity {
+	return reviewIdentity{c.Provider, c.WebBase, c.APIBase, c.Owner, c.Repository, c.ProjectID, c.RepositoryID, c.SourceRepositoryID, c.RepoPath, c.PolicyFile, c.Branch}
+}
+
 type forgeCapture struct {
 	Provider, RepositoryID, SourceRepositoryID, Head, Target, URL string
 	Number                                                        int
@@ -72,13 +89,18 @@ func loadForgeConfig(path string) (forgeConfig, error) {
 	if e := readJSON(path, &c); e != nil {
 		return c, e
 	}
+	return validateForgeConfig(c)
+}
+
+// validateForgeConfig checks a forge configuration from either format.
+func validateForgeConfig(c forgeConfig) (forgeConfig, error) {
 	if c.Provider != "github" && c.Provider != "gitlab" {
 		return c, errors.New("unsupported forge provider")
 	}
 	if c.RepoPath == "" || c.RepositoryID == "" || c.Branch == "" {
 		return c, errors.New("trusted repository mapping is incomplete")
 	}
-	if c.Mode != "" && c.Mode != "shadow" && c.Mode != "submit" {
+	if c.Mode != "" && c.Mode != "shadow" && c.Mode != "submit" && c.Mode != "off" && c.Mode != "evaluate" {
 		return c, errors.New("invalid approval mode")
 	}
 	for _, base := range []string{c.WebBase, c.APIBase} {
@@ -99,8 +121,8 @@ func loadForgeConfig(path string) (forgeConfig, error) {
 	if c.BotUserID != "" && !numericID.MatchString(c.BotUserID) {
 		return c, errors.New("bot_user_id must be a numeric user ID")
 	}
-	if c.CommentMode != "" && c.CommentMode != "post" {
-		return c, errors.New("comment_mode must be empty (off) or post")
+	if c.CommentMode != "" && c.CommentMode != "post" && c.CommentMode != "off" {
+		return c, errors.New("comment_mode must be empty (render only), off or post")
 	}
 	if c.CommentMode == "post" && c.BotUserID == "" {
 		return c, errors.New("comment_mode post requires bot_user_id")
@@ -274,11 +296,7 @@ func fileDigest(path string) (string, error) {
 
 // forgeConfigDigest covers review-relevant trusted mapping only; publication
 // switches and the bot identity can change without invalidating reviews.
-func forgeConfigDigest(c forgeConfig) string {
-	c.Mode, c.CommentMode, c.BotUserID = "", "", ""
-	c.CITrust, c.CIPaths, c.SyncRemote = "", nil, ""
-	return identityID(c)
-}
+func forgeConfigDigest(c forgeConfig) string { return identityID(c.identity()) }
 func hostPolicyItem(minimum int, decision *policy.Decision, d gitreader.Diff, path string) (contextpack.Item, string, error) {
 	facts := struct {
 		EnforcedMinimum            int
@@ -387,25 +405,31 @@ func handleForgeReview(ctx context.Context, args []string) (bool, int) {
 func forgeReviewCommand(ctx context.Context, args []string) (int, error) {
 	f := flag.NewFlagSet("review --url", flag.ContinueOnError)
 	raw := f.String("url", "", "PR/MR URL")
-	config := f.String("forge-config", "", "trusted forge repository mapping")
-	state := f.String("state", ".reviewd", "durable state directory")
+	cf := addConfigFlags(f)
 	response := f.String("response", "", "offline model response")
 	modelConfig := f.String("model-config", "", "live structured model config")
 	policyFile := f.String("policy", "", "trusted merge risk policy")
 	minimum := f.Int("minimum", 1, "base minimum")
 	threshold := f.Int("threshold", 3, "inclusive threshold")
 	cap := f.Int("max-bytes", 1<<20, "prompt cap")
-	if f.Parse(args) != nil || f.NArg() != 0 || *raw == "" || *config == "" {
+	if f.Parse(args) != nil || f.NArg() != 0 || *raw == "" {
 		return 2, nil
 	}
-	c, e := loadForgeConfig(*config)
+	sel, code, e := cf.open()
+	if e != nil {
+		return code, e
+	}
+	c, e := sel.forURL(*raw)
 	if e != nil {
 		return 2, e
 	}
 	if *policyFile != "" && *policyFile != c.PolicyFile {
 		return 2, errors.New("policy must match trusted forge mapping")
 	}
-	id, result, code, e := forgeReview(ctx, c, *raw, reviewOptions{State: *state, Response: *response, ModelConfig: *modelConfig, Minimum: *minimum, Threshold: *threshold, Cap: *cap})
+	if *response == "" && *modelConfig == "" {
+		*response, *modelConfig = c.response, c.modelConfig
+	}
+	id, result, code, e := forgeReview(ctx, c, *raw, reviewOptions{State: sel.state, Response: *response, ModelConfig: *modelConfig, Minimum: *minimum, Threshold: *threshold, Cap: *cap})
 	if e != nil {
 		return code, e
 	}
@@ -503,34 +527,37 @@ func forgeReview(ctx context.Context, c forgeConfig, raw string, o reviewOptions
 func publishCommand(ctx context.Context, args []string) (int, error) {
 	f := flag.NewFlagSet("publish", flag.ContinueOnError)
 	runID := f.String("run", "", "durable forge review ID")
-	config := f.String("forge-config", "", "trusted forge configuration")
-	state := f.String("state", ".reviewd", "state directory")
-	if f.Parse(args) != nil || *runID == "" || *config == "" || f.NArg() != 0 {
+	cf := addConfigFlags(f)
+	if f.Parse(args) != nil || *runID == "" || f.NArg() != 0 {
 		return 2, nil
 	}
-	return withWriter(ctx, *config, *state, func(c forgeConfig, s *storage.Store) (any, int, error) {
+	return withWriter(ctx, cf, func(sel selection, s *storage.Store) (any, int, error) {
+		c, e := sel.forRun(ctx, s, *runID)
+		if e != nil {
+			return nil, 2, e
+		}
 		return publishRun(ctx, c, s, *runID)
 	})
 }
 
 // withWriter loads trusted config, takes the single-writer state lock and
 // emits the inner command's output.
-func withWriter(ctx context.Context, config, state string, run func(forgeConfig, *storage.Store) (any, int, error)) (int, error) {
-	c, e := loadForgeConfig(config)
+func withWriter(ctx context.Context, cf configFlags, run func(selection, *storage.Store) (any, int, error)) (int, error) {
+	sel, code, e := cf.open()
 	if e != nil {
-		return 2, e
+		return code, e
 	}
-	release, e := statelock.Acquire(state)
+	release, e := statelock.Acquire(sel.state)
 	if e != nil {
 		return 1, e
 	}
 	defer release()
-	s, e := storage.Open(state)
+	s, e := storage.Open(sel.state)
 	if e != nil {
 		return 1, e
 	}
 	defer s.Close()
-	out, code, e := run(c, s)
+	out, code, e := run(sel, s)
 	if out != nil {
 		if ee := emit(out); ee != nil && e == nil {
 			return 1, ee
@@ -548,6 +575,9 @@ func publishRun(ctx context.Context, c forgeConfig, s *storage.Store, runID stri
 	var r review.Result
 	if e = json.Unmarshal(b, &r); e != nil {
 		return nil, 1, e
+	}
+	if c.Mode == "off" {
+		return publish.Publication{State: "off", Reason: "approvals are off"}, 0, nil
 	}
 	if c.Mode == "" || c.Mode == "shadow" {
 		return publish.Publication{State: "shadow", Reason: "approval submission disabled"}, 0, nil
@@ -579,8 +609,29 @@ func publishRun(ctx context.Context, c forgeConfig, s *storage.Store, runID stri
 	} else {
 		remote = &gitlabPublication{c: c, provenance: p, result: r}
 	}
+	request := publish.Request{Mode: "submit", ReviewedHead: p.Capture.Head, ReviewedTarget: p.Capture.Target, PolicyDigest: p.PolicyDigest, Eligible: r.Status == "completed" && r.Package.Complete}
+	if c.Mode == "evaluate" {
+		// Shadow: evaluate every live requirement, write nothing.
+		obs, e := remote.Refresh(ctx)
+		if e != nil {
+			return nil, 1, e
+		}
+		d, e := publish.Gate(request, obs)
+		if e != nil {
+			return nil, 1, e
+		}
+		reason := "would approve: " + d.Reason
+		if !d.Approve {
+			why := remote.withheldReason()
+			if why == "" {
+				why = d.Reason
+			}
+			reason = "would withhold: " + why
+		}
+		return publish.Publication{Request: request, State: "shadow", Reason: reason, Decision: d}, 0, nil
+	}
 	service := publish.Service{Remote: remote, Audit: s}
-	out, e := service.Publish(ctx, runID, publish.Request{Mode: "submit", ReviewedHead: p.Capture.Head, ReviewedTarget: p.Capture.Target, PolicyDigest: p.PolicyDigest, Eligible: r.Status == "completed" && r.Package.Complete})
+	out, e := service.Publish(ctx, runID, request)
 	if e != nil {
 		return nil, 1, e
 	}
@@ -797,18 +848,24 @@ func (g *gitlabPublication) Approve(ctx context.Context, head string) (string, e
 func commentCommand(ctx context.Context, args []string) (int, error) {
 	f := flag.NewFlagSet("comment", flag.ContinueOnError)
 	runID := f.String("run", "", "durable forge review ID")
-	config := f.String("forge-config", "", "trusted forge configuration")
-	state := f.String("state", ".reviewd", "state directory")
-	if f.Parse(args) != nil || *runID == "" || *config == "" || f.NArg() != 0 {
+	cf := addConfigFlags(f)
+	if f.Parse(args) != nil || *runID == "" || f.NArg() != 0 {
 		return 2, nil
 	}
-	return withWriter(ctx, *config, *state, func(c forgeConfig, s *storage.Store) (any, int, error) {
+	return withWriter(ctx, cf, func(sel selection, s *storage.Store) (any, int, error) {
+		c, e := sel.forRun(ctx, s, *runID)
+		if e != nil {
+			return nil, 2, e
+		}
 		return commentRun(ctx, c, s, *runID)
 	})
 }
 
 // commentRun assumes the caller holds the state lock.
 func commentRun(ctx context.Context, c forgeConfig, s *storage.Store, runID string) (any, int, error) {
+	if c.CommentMode == "off" {
+		return publish.CommentPublication{RunID: runID, State: "off", Reason: "comments are off"}, 0, nil
+	}
 	b, e := s.Load(ctx, "review_provenance", runID)
 	if e != nil {
 		return nil, 4, errors.New("review has no immutable forge provenance")
@@ -948,17 +1005,27 @@ type revalidationResult struct {
 
 func revalidateCommand(ctx context.Context, args []string) (int, error) {
 	f := flag.NewFlagSet("revalidate", flag.ContinueOnError)
-	config := f.String("forge-config", "", "trusted forge configuration")
-	state := f.String("state", ".reviewd", "state directory")
-	if f.Parse(args) != nil || *config == "" || f.NArg() != 0 {
+	cf := addConfigFlags(f)
+	repo := f.String("repo", "", "repository name in reviewd.json (default: every GitLab repository)")
+	if f.Parse(args) != nil || f.NArg() != 0 {
 		return 2, nil
 	}
-	return withWriter(ctx, *config, *state, func(c forgeConfig, s *storage.Store) (any, int, error) {
-		r, e := revalidateRun(ctx, c, s)
+	return withWriter(ctx, cf, func(sel selection, s *storage.Store) (any, int, error) {
+		targets, e := sel.repositories(*repo, "gitlab")
 		if e != nil {
-			return r, 1, e
+			return nil, 2, e
 		}
-		return r, 0, nil
+		out := map[string]revalidationResult{}
+		var errs []error
+		for _, c := range targets {
+			r, e := revalidateRun(ctx, c, s)
+			out[c.name] = r
+			errs = append(errs, e)
+		}
+		if e := errors.Join(errs...); e != nil {
+			return single(out), 1, e
+		}
+		return single(out), 0, nil
 	})
 }
 
@@ -1047,20 +1114,43 @@ type doctorReport struct {
 // the state lock so it can run beside the service.
 func doctorCommand(ctx context.Context, args []string) (int, error) {
 	f := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	config := f.String("forge-config", "", "trusted forge configuration")
-	if f.Parse(args) != nil || *config == "" || f.NArg() != 0 {
+	cf := addConfigFlags(f)
+	repo := f.String("repo", "", "repository name in reviewd.json (default: every GitLab repository)")
+	if f.Parse(args) != nil || f.NArg() != 0 {
 		return 2, nil
 	}
-	c, e := loadForgeConfig(*config)
+	sel, code, e := cf.open()
+	if e != nil {
+		return code, e
+	}
+	targets, e := sel.repositories(*repo, "gitlab")
 	if e != nil {
 		return 2, e
 	}
-	if c.Provider != "gitlab" {
-		return 2, errors.New("doctor supports GitLab forge configurations")
+	reports := map[string]doctorReport{}
+	failed := false
+	for _, c := range targets {
+		r, e := doctorRun(ctx, c)
+		if e != nil {
+			return 1, e
+		}
+		reports[c.name] = r
+		failed = failed || !r.OK
 	}
+	if e = emit(single(reports)); e != nil {
+		return 1, e
+	}
+	if failed {
+		return 4, nil
+	}
+	return 0, nil
+}
+
+func doctorRun(ctx context.Context, c forgeConfig) (doctorReport, error) {
+	var e error
 	checks, e := gitlabClient(c).Diagnose(ctx, gl.DiagnoseInput{ProjectID: c.ProjectID, ProjectPath: c.Repository, Branch: c.Branch, BotUserID: c.BotUserID, CITrust: c.CITrust})
 	if e != nil {
-		return 1, e
+		return doctorReport{}, e
 	}
 	mirror := gl.Check{Name: "mirror", OK: true, Detail: "branch " + c.Branch + " resolves in " + c.RepoPath}
 	if c.SyncRemote != "" {
@@ -1074,12 +1164,5 @@ func doctorCommand(ctx context.Context, args []string) (int, error) {
 		}
 	}
 	checks = append(checks, mirror)
-	report := doctorReport{OK: !gl.Failed(checks), Checks: checks}
-	if e = emit(report); e != nil {
-		return 1, e
-	}
-	if !report.OK {
-		return 4, nil
-	}
-	return 0, nil
+	return doctorReport{OK: !gl.Failed(checks), Checks: checks}, nil
 }
