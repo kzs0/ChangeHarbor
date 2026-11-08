@@ -8,20 +8,21 @@ follow redirects, cap response bytes and return `*StatusError` for non-2xx.
 - `Change`: MR identity, state, draft (`draft` or legacy `work_in_progress`),
   target branch, head pipeline ID, diff base, and the **live** target branch tip.
 - `Collect(Expect) Facts`: one live snapshot of MR, token identity
-  (`/user`), project merge settings, approval settings, protected branch,
-  MR approval state, head pipeline, merged-result parents and pipeline jobs.
-  403/404 from Premium approval endpoints are recorded as unknown, not errors.
+  (`/user`), project settings, head pipeline, merged-result parents and
+  pipeline jobs; plus, when `Expect.Protections` is required (default),
+  approval settings, protected branch and MR approval state (403/404 from
+  Premium endpoints recorded as unknown). Advisory reads no protection
+  setting and no Premium-only endpoint.
 - `Evaluate(Facts, Expect)`: returns passed required jobs or one withholding
   reason. Approval requires all of:
   - head/target unchanged, MR open and not draft, target branch equals mapping,
     GitLab diff base equals the locally computed merge base;
   - token acts as `bot_user_id`;
-  - pipelines must succeed, skipped pipelines not mergeable, and target
-    freshness enforced natively (`ff`, `rebase_merge`, or merged results);
-  - approvals reset on push (selective code-owner removal is insufficient);
-  - target protected and force push disallowed;
-  - every unapproved rule with required approvals can be completed by the bot
-    alone (eligible or `any_approver`, at most one approval left);
+  - unless protections are advisory: pipelines must succeed, skipped
+    pipelines not mergeable, target freshness enforced natively, approvals
+    reset on push, target protected without force push, and every open
+    approval rule completable by the bot alone;
+  - CI configuration trust (`ci_trust`) holds;
   - head pipeline in the target project, source `merge_request_event` or
     `push`, status `success`, and bound to the reviewed revision: either its SHA
     is the head, or it is `refs/merge-requests/<iid>/merge` whose parents are
@@ -36,3 +37,8 @@ follow redirects, cap response bytes and return `*StatusError` for non-2xx.
 - `Comments` lists MR notes excluding system notes. `CreateNote`/`UpdateNote`
   return the written note with its author; 401/403/404/422 are `ErrRejected`,
   other failures ambiguous.
+- `Diagnose`: preflight. Errors for token identity, `api` scope, Developer
+  role, CI trust and, unless advisory, forge protections; with advisory
+  protections, protection gaps are warnings.
+- `Unapprove` (404 = already withdrawn) and `ApprovedBy` support revalidation,
+  which withdraws ChangeHarbor's approval whenever the MR head or target moved.

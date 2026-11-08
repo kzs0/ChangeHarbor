@@ -30,6 +30,7 @@ import (
 	riskpolicy "github.com/kzs0/reviewd/internal/policy"
 	"github.com/kzs0/reviewd/internal/release"
 	"github.com/kzs0/reviewd/internal/review"
+	"github.com/kzs0/reviewd/internal/statelock"
 	"github.com/kzs0/reviewd/internal/storage"
 	"github.com/kzs0/reviewd/internal/worker"
 )
@@ -223,8 +224,8 @@ func extraCommand(ctx context.Context, args []string) (int, error) {
 		if f.Parse(args[1:]) != nil || *config == "" {
 			return 2, nil
 		}
-		var c serverConfig
-		if e := readJSON(*config, &c); e != nil {
+		c, e := loadServerConfig(*config)
+		if e != nil {
 			return 2, e
 		}
 		if e := c.validate(); e != nil {
@@ -243,6 +244,11 @@ type repositoryConfig struct {
 	Branch             string                      `json:"branch"`
 	ModelConfig        string                      `json:"model_config"`
 	Response           string                      `json:"response"`
+	// ForgeConfig enables the full forge flow for MR/PR events: API-captured
+	// review, then comment and approval per that configuration's modes.
+	ForgeConfig string `json:"forge_config"`
+
+	forge *forgeConfig // compiled from changeharbor.yaml
 }
 type serverConfig struct {
 	ContextRebuildInterval string                      `json:"context_rebuild_interval"`
@@ -296,6 +302,11 @@ func serve(ctx context.Context, c serverConfig) (int, error) {
 	if e := os.MkdirAll(c.State, 0700); e != nil {
 		return 1, e
 	}
+	release, e := statelock.Acquire(c.State)
+	if e != nil {
+		return 1, e
+	}
+	defer release()
 	q, e := jobs.Open(filepath.Join(c.State, "jobs.db"))
 	if e != nil {
 		return 1, e
@@ -503,18 +514,33 @@ func processEvent(ctx context.Context, c serverConfig, j jobs.Job, b []byte) err
 	if event.Branch != o.Branch {
 		return errors.New("event targets an unconfigured branch")
 	}
+	forge := o.forge
+	if forge == nil && o.ForgeConfig != "" {
+		fc, e := loadForgeConfig(o.ForgeConfig)
+		if e != nil {
+			return e
+		}
+		if fc.Provider != event.Provider || fc.RepositoryID != event.RepositoryID || fc.RepoPath != o.Path || fc.Branch != o.Branch {
+			return errors.New("forge configuration does not match the trusted repository mapping")
+		}
+		forge = &fc
+	}
 	if event.Kind == "ingest" {
-		s, e := storage.Open(c.State)
-		if e != nil {
+		if e := ingestEvent(ctx, c, o, event); e != nil {
 			return e
 		}
-		defer s.Close()
-		l, e := journal.Open(ctx, s)
-		if e != nil {
+		if forge != nil {
+			return revalidateEvent(ctx, c, *forge, 0)
+		}
+		return nil
+	}
+	if event.Kind == "review" && forge != nil {
+		// Withdraw any approval for an older head before reviewing the new
+		// one, whatever the forge's own reset-on-push settings.
+		if e := revalidateEvent(ctx, c, *forge, event.ChangeNumber); e != nil {
 			return e
 		}
-		_, e = mergeingest.ReconcileGit(ctx, l, s, mergeingest.GitOptions{Path: o.Path, Repository: filepath.Clean(o.Path), Branch: o.Branch, Through: event.Head, MaxBytes: 8 << 20})
-		return e
+		return automateChange(ctx, c, o, *forge, event.ChangeNumber)
 	}
 	if event.Kind != "review" {
 		return errors.New("unsupported durable job kind")
@@ -558,4 +584,61 @@ func processEvent(ctx context.Context, c serverConfig, j jobs.Job, b []byte) err
 		return e
 	}
 	return saveAndAnnounce(ctx, c.State, "review", r)
+}
+
+func ingestEvent(ctx context.Context, c serverConfig, o repositoryConfig, event worker.Event) error {
+	s, e := storage.Open(c.State)
+	if e != nil {
+		return e
+	}
+	defer s.Close()
+	l, e := journal.Open(ctx, s)
+	if e != nil {
+		return e
+	}
+	_, e = mergeingest.ReconcileGit(ctx, l, s, mergeingest.GitOptions{Path: o.Path, Repository: filepath.Clean(o.Path), Branch: o.Branch, Through: event.Head, MaxBytes: 8 << 20})
+	return e
+}
+
+// automateChange runs the forge flow for one change under the service's
+// state lock: review from API-captured revisions (the webhook only names the
+// change), then comment and publish as the forge configuration allows.
+func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc forgeConfig, number int) error {
+	if number <= 0 {
+		return errors.New("event has no change number")
+	}
+	id, result, _, e := forgeReview(ctx, fc, changeURL(fc, number), reviewOptions{State: c.State, Response: o.Response, ModelConfig: o.ModelConfig, Minimum: 1, Threshold: 3, Cap: 1 << 20})
+	if e != nil {
+		return e
+	}
+	fmt.Fprintln(os.Stderr, "saved forge review:", id)
+	if result.Status != "completed" {
+		return nil
+	}
+	s, e := storage.Open(c.State)
+	if e != nil {
+		return e
+	}
+	defer s.Close()
+	if fc.CommentMode == "post" {
+		if _, _, e = commentRun(ctx, fc, s, id); e != nil {
+			return e
+		}
+	}
+	if fc.Mode == "submit" {
+		if _, _, e = publishRun(ctx, fc, s, id); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+func revalidateEvent(ctx context.Context, c serverConfig, fc forgeConfig, only int) error {
+	s, e := storage.Open(c.State)
+	if e != nil {
+		return e
+	}
+	defer s.Close()
+	_, e = revalidateRun(ctx, fc, s, only)
+	return e
 }
