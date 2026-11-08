@@ -145,7 +145,7 @@ repositories:
 | `review` | — | The section itself. Changing anything in it invalidates existing reviews. |
 | `review.instructions` | — | Repository-wide instructions added to every review prompt. |
 | `review.path_instructions` | — | List of `{paths, instructions}`. An entry is added only when a changed file (old or new path) matches one of its globs. |
-| `review.exclude` | — | Globs of files left out of the model's input, such as lockfiles, vendored and generated code. Excluded files are listed in the summary and can't get comments. Risk-policy minimums still count them, so excluding can't lower risk. A file moved out of an excluded directory is still reviewed. |
+| `review.exclude` | — | Globs of files left out of the model's input, such as lockfiles, vendored and generated code. Excluded files are listed in the summary and can't get comments. Risk-policy minimums still count them, so excluding can't lower risk. A file moved out of an excluded directory is still reviewed. If every changed file is excluded, nothing is reviewed: the run is `input_incomplete` and is never approved. |
 
 All instructions together are capped at 16 KiB. Globs use `*` within a path
 segment, `?` for one character and `**` for whole segments.

@@ -63,6 +63,14 @@ repositories:
   - generated code: `**/*.pb.go`, `**/*_generated.go`, `**/zz_generated*.go`,
     `**/*.min.js`.
 
+- If exclusions remove every changed file, nothing is reviewed: the run is
+  `input_incomplete` (reason `all_changes_excluded_by_trusted_policy`), no
+  model call is made, and it can never be approved.
+- Each file's patch is its own diff section only. git's patch for a copy's
+  pathspec also contains the copy source's modification; trimming it keeps an
+  excluded source from reaching the model through a kept copy and keeps
+  anchors attributed to the right file.
+
 ## 3. Review identity
 
 Guidance and exclusions change the model's input, so they belong to the

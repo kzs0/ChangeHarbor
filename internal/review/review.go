@@ -6,6 +6,7 @@ import (
 	"github.com/kzs0/reviewd/internal/contextpack"
 	"github.com/kzs0/reviewd/internal/git"
 	"github.com/kzs0/reviewd/internal/model"
+	"strings"
 )
 
 type Input struct {
@@ -49,6 +50,14 @@ func (e Engine) Run(ctx context.Context, i Input) (Result, error) {
 		p.Coverage = append(p.Coverage, contextpack.Entry{ID: "excluded:" + path, Status: "excluded_by_trusted_policy"})
 	}
 	r.Package = p
+	if len(i.Excluded) > 0 && !reviewable(i.Items) {
+		// Trusted exclusions removed every changed file: nothing would be
+		// reviewed, so the run is incomplete and can never be approved.
+		r.Package.Complete = false
+		r.Status = "input_incomplete"
+		r.Reasons = []string{"all_changes_excluded_by_trusted_policy"}
+		return r, nil
+	}
 	known := map[string]bool{}
 	for _, c := range p.Coverage {
 		if c.Status == "included" {
@@ -158,4 +167,14 @@ func validateAnchors(v model.Review, anchors []git.Anchor) error {
 		}
 	}
 	return nil
+}
+
+// reviewable reports whether the diff item has any content left to review.
+func reviewable(items []contextpack.Item) bool {
+	for _, item := range items {
+		if item.ID == "diff" {
+			return strings.TrimSpace(item.Content) != ""
+		}
+	}
+	return true
 }
