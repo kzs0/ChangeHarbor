@@ -58,6 +58,7 @@ type inlineOut struct {
 	Inline        struct {
 		State, Reason                           string
 		Created, Kept, MarkedOutdated, Unmarked []string
+		Skipped                                 []string
 		Planned                                 []struct {
 			Fingerprint, Path, Side string
 			Line                    int
@@ -77,6 +78,7 @@ func decodeInline(t *testing.T, out string) inlineOut {
 // discussions fakes GitLab MR discussions, chaining any existing extra routes.
 type discussions struct {
 	list                []fakeDiscussion
+	diffs               []map[string]any // GitLab's MR diff files; default: file "a" modified
 	next                int
 	writeCode           int
 	applyDespiteFailure bool
@@ -102,6 +104,15 @@ func (d *discussions) attach(f *fakeGitLab) {
 			return map[string]any{"id": x.ID, "individual_note": false, "notes": []any{map[string]any{"id": x.NoteID, "body": x.Body, "system": x.System, "author": map[string]any{"id": x.AuthorID}, "position": x.Position}}}
 		}
 		switch {
+		case r.Method == "GET" && path == "/projects/9/merge_requests/7/diffs":
+			files := d.diffs
+			if files == nil {
+				files = []map[string]any{{"old_path": "a", "new_path": "a", "new_file": false, "deleted_file": false, "renamed_file": false}}
+			}
+			if r.URL.Query().Get("page") != "1" {
+				files = []map[string]any{}
+			}
+			js(files)
 		case r.Method == "GET" && path == "/projects/9/merge_requests/7/discussions":
 			d.gets++
 			out := []any{}
@@ -505,5 +516,18 @@ func TestGitHubInlineE2ELifecycle(t *testing.T) {
 		if strings.Contains(cm["body"].(string), publish.OutdatedMarker) {
 			t.Fatal("comment still outdated after the finding returned")
 		}
+	}
+}
+
+// A finding GitLab's own diff can't place is skipped and reported, and does
+// not stop the other inline comments from being created.
+func TestGitLabInlineE2ESkipsUnplaceableFindings(t *testing.T) {
+	x, d := inlineGitLab(t)
+	d.diffs = []map[string]any{{"old_path": "a", "new_path": "a", "new_file": true, "deleted_file": false}}
+	run := x.inlineReview("skip", fNew, fOld)
+	code, out, stderr := x.comment(run)
+	o := decodeInline(t, out)
+	if code != 0 || o.Inline.State != "published" || len(o.Inline.Created) != 1 || len(o.Inline.Skipped) != 1 || d.posts != 1 {
+		t.Fatalf("exit %d %+v %s posts %d", code, o.Inline, stderr, d.posts)
 	}
 }
