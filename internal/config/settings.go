@@ -61,8 +61,9 @@ type MirrorSettings struct {
 }
 
 type PublishSettings struct {
-	Approvals string `json:"approvals,omitempty"`
-	Comments  string `json:"comments,omitempty"`
+	Approvals   string `json:"approvals,omitempty"`
+	Comments    string `json:"comments,omitempty"`
+	Protections string `json:"protections,omitempty"`
 }
 
 type GitLabSettings struct {
@@ -283,6 +284,10 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 		}
 		set("publish.comments", "shadow", &r.Publish.Comments)
 		if e := enum(p+".publish.comments", r.Publish.Comments, "off", "shadow", "post"); e != nil {
+			return e
+		}
+		set("publish.protections", "required", &r.Publish.Protections)
+		if e := enum(p+".publish.protections", r.Publish.Protections, "required", "advisory"); e != nil {
 			return e
 		}
 		if r.Provider == "github" && r.GitLab != nil {

@@ -33,9 +33,10 @@ the policy's minimum. It's approvable only at or below your threshold.
 
 **Publication.** Each review is saved with its provenance: commits, policy
 digest and config identity. Before commenting or approving, ChangeHarbor
-re-reads the live forge and withholds if anything moved. Approval doesn't
-depend on the forge's protection settings. Instead, ChangeHarbor withdraws its
-own approval as soon as the change or its target moves.
+re-reads the live forge and withholds if anything moved, or (by default) if
+the forge's own protections aren't in place. `publish.protections: advisory`
+opts out of the protection requirement. In both modes ChangeHarbor withdraws
+its own approval as soon as the change or its target moves.
 
 ## Modes
 

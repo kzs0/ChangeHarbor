@@ -22,8 +22,10 @@ more. These are the rules it enforces in code.
 - **ChangeHarbor withdraws its own approvals.** On every MR/PR event, before
   reviewing a new head, and after every target push, ChangeHarbor unapproves
   (GitLab) or dismisses its review (GitHub) wherever the head or target moved
-  since it approved. Approvals don't depend on forge protection settings, so
-  this holds even when the forge keeps approvals on push.
+  since it approved. This holds even when the forge keeps approvals on push.
+- **Forge protections by default.** Approvals require the forge's own
+  protections (approval reset, protected branch, merge gates) unless a
+  repository explicitly sets `publish.protections: advisory`.
 - **Live re-checks.** Before every write, ChangeHarbor re-reads the forge and
   withholds if the head, target, policy or configuration changed.
 - **Trusted CI.** A check counts only if a trusted producer ran it on the

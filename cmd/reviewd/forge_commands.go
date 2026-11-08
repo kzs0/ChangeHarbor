@@ -57,6 +57,9 @@ type forgeConfig struct {
 	CITrust    string   `json:"ci_trust,omitempty"`
 	CIPaths    []string `json:"ci_paths,omitempty"`
 	SyncRemote string   `json:"sync_remote,omitempty"`
+	// Protections is "required" (default when empty) or "advisory", which
+	// approves regardless of the forge's protection settings (opt-in).
+	Protections string `json:"protections,omitempty"`
 
 	// Set only when compiled from changeharbor.yaml.
 	name, response, modelConfig string
@@ -126,6 +129,9 @@ func validateForgeConfig(c forgeConfig) (forgeConfig, error) {
 	}
 	if c.CommentMode == "post" && c.BotUserID == "" {
 		return c, errors.New("comment_mode post requires bot_user_id")
+	}
+	if c.Protections != "" && c.Protections != "required" && c.Protections != "advisory" {
+		return c, errors.New("protections must be required or advisory")
 	}
 	if c.CITrust != "" && c.CITrust != "external_config" && c.CITrust != "unchanged_config" {
 		return c, errors.New("ci_trust must be external_config or unchanged_config")
@@ -673,6 +679,18 @@ func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, e
 		g.reason = reason
 		return obs, e
 	}
+	var requiredContexts []string
+	if g.c.Protections != "advisory" {
+		protection, e := g.client().Protection(ctx, g.c.Owner, g.c.Repository, g.c.Branch)
+		if e != nil {
+			return obs, e
+		}
+		if !protection.Known || !protection.StrictChecks || protection.RequiredReviews {
+			g.reason = "native strict protections or required human review evidence are not established (set publish.protections: advisory to approve regardless)"
+			return obs, nil
+		}
+		requiredContexts = protection.RequiredContexts
+	}
 	checks, e := g.client().Checks(ctx, g.c.Owner, g.c.Repository, c.Head, 10, 100)
 	if e != nil {
 		return obs, e
@@ -694,6 +712,12 @@ func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, e
 			return obs, nil
 		}
 		passed[name] = true
+	}
+	for _, name := range requiredContexts {
+		if !passed[name] {
+			g.reason = "native required check has no verified trusted producer mapping"
+			return obs, nil
+		}
 	}
 	obs.ChecksPass, g.reason, e = hostPolicyAllows(ctx, g.c, g.result, d, passed)
 	return obs, e
@@ -785,7 +809,7 @@ func (g *gitlabPublication) Refresh(ctx context.Context) (publish.Observation, e
 		return publish.Observation{}, e
 	}
 	reviewed := g.provenance.Capture
-	expect := gl.Expect{ProjectID: g.c.ProjectID, IID: reviewed.Number, Head: reviewed.Head, Target: reviewed.Target, TargetBranch: g.c.Branch, BotUserID: g.c.BotUserID, RequiredJobs: g.c.RequiredChecks}
+	expect := gl.Expect{ProjectID: g.c.ProjectID, IID: reviewed.Number, Head: reviewed.Head, Target: reviewed.Target, TargetBranch: g.c.Branch, BotUserID: g.c.BotUserID, RequiredJobs: g.c.RequiredChecks, Protections: g.c.Protections}
 	facts, e := gitlabClient(g.c).Collect(ctx, expect)
 	if e != nil {
 		return publish.Observation{}, e
@@ -1154,7 +1178,7 @@ func doctorCommand(ctx context.Context, args []string) (int, error) {
 
 func doctorRun(ctx context.Context, c forgeConfig) (doctorReport, error) {
 	var e error
-	checks, e := gitlabClient(c).Diagnose(ctx, gl.DiagnoseInput{ProjectID: c.ProjectID, ProjectPath: c.Repository, Branch: c.Branch, BotUserID: c.BotUserID, CITrust: c.CITrust})
+	checks, e := gitlabClient(c).Diagnose(ctx, gl.DiagnoseInput{ProjectID: c.ProjectID, ProjectPath: c.Repository, Branch: c.Branch, BotUserID: c.BotUserID, CITrust: c.CITrust, Protections: c.Protections})
 	if e != nil {
 		return doctorReport{}, e
 	}

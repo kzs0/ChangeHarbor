@@ -26,9 +26,22 @@ review does.
 | merge request targets a different branch than the trusted mapping | Retarget it, or configure that branch as its own repository entry. |
 | credential does not act as the configured bot user | The token belongs to someone else. Run `reviewd config resolve` after changing tokens. |
 
-Forge protection settings (merge method, pipelines must succeed, approval
-reset, protected branches, approval rules) never withhold an approval.
-`reviewd doctor` reports them as warnings.
+## Forge protections
+
+These withhold only with the default `publish.protections: required`. Fix the
+setting, or opt out with `publish.protections: advisory`.
+
+| Reason | Setting |
+| --- | --- |
+| pipelines are not required to succeed before merge | **Settings → Merge requests → Pipelines must succeed** |
+| skipped pipelines may be merged | Turn off **Skipped pipelines are considered successful** |
+| target freshness is not enforced natively | Use fast-forward or semi-linear merges, or enable merged results pipelines. |
+| approval settings or rules unavailable; GitLab Premium … | Required protections need GitLab Premium or Ultimate. |
+| approvals are not reset on push | **Approval settings → When a commit is added: Remove all approvals** |
+| target branch is not protected / allows force push | **Settings → Repository → Protected branches** |
+| native approval rule "…" requires additional human approval | The bot can't complete that rule alone. Humans approve, or add the bot to the rule. |
+| native strict protections or required human review evidence are not established (GitHub) | Turn on **Require branches to be up to date** and don't require approving reviews. |
+| native required check has no verified trusted producer mapping (GitHub) | Map every required status check in `github.required_checks`. |
 
 ## Pipelines and checks
 

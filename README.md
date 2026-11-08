@@ -115,9 +115,11 @@ bin/reviewd serve --config changeharbor.yaml   # needs a "service" section
 ```
 
 Local mirrors must contain the captured commits (or set `mirror.sync`).
-Approvals are submitted whenever `publish.approvals` is `submit` and
-ChangeHarbor's own evidence holds; forge protection settings never block them.
-ChangeHarbor withdraws its own approval when the change or its target moves.
+Approvals are submitted when `publish.approvals` is `submit`, ChangeHarbor's
+own evidence holds and, by default, the forge's protections are in place.
+`publish.protections: advisory` (opt-in) approves regardless of protection
+settings. Either way ChangeHarbor withdraws its own approval when the change or
+its target moves.
 No auto-merge occurs.
 
 ### Review comments
@@ -158,9 +160,9 @@ bin/reviewd doctor                 # read-only preflight, every GitLab repositor
 bin/reviewd revalidate             # withdraw approvals whose MR moved
 ```
 
-`doctor` checks token identity/scope/expiry, the bot's role, CI trust and the
-mirror (errors), and reports merge/approval settings, branch protection and
-approval rules as warnings. `revalidate` withdraws ChangeHarbor approvals
+`doctor` checks token identity/scope/expiry, the bot's role, CI trust, the
+mirror and the forge protections (errors; protection gaps are warnings with
+`publish.protections: advisory`). `revalidate` withdraws ChangeHarbor approvals
 (GitLab unapprove, GitHub review dismissal) whose head or target moved; `serve`
 runs it for each MR/PR event before reviewing, and after each target push. Under
 `serve`, MR webhooks run the whole flow (API-captured review, comment, publish)
@@ -168,10 +170,13 @@ per each repository's `publish` settings. One
 process may write a state directory at a time (`<state>/writer.lock`).
 
 Approval is submitted when live GitLab facts establish: MR open, not draft
-and targeting the configured branch; the token is the bot; CI trust holds; and a
+and targeting the configured branch; the token is the bot; CI trust holds; a
 successful head pipeline in the target project, bound to the reviewed head (or
 a merged-results commit of exactly the live target and head), contains every
-required job. It works on every GitLab tier. Definite provider refusals are audited as withheld and may be retried;
+required job; and, unless `publish.protections: advisory`, pipelines must
+succeed with fast-forward/semi-linear/merged-results merges, approvals reset on
+push, the target is protected without force push, and approval rules are
+completable by the bot (these need GitLab Premium). Definite provider refusals are audited as withheld and may be retried;
 ambiguous outcomes stay pending for reconciliation.
 
 ## Release assessment

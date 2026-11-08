@@ -1,5 +1,54 @@
 package mergeingest_test
-import("context";"errors";"testing";"github.com/kzs0/reviewd/internal/journal";"github.com/kzs0/reviewd/internal/mergeingest";"github.com/kzs0/reviewd/internal/storage")
-type source struct{rows []journal.Transition;err error}
-func(s source)Transitions(context.Context,string,string,string,string)([]journal.Transition,error){return s.rows,s.err}
-func TestReconciliationCompleteness(t *testing.T){for _,tc:=range []struct{name string;rows []journal.Transition;err error;ok bool}{{name:"missing event catchup",rows:[]journal.Transition{{ID:"a",Repository:"r",Branch:"main",From:"c0",To:"c1",DiffDigest:"d"},{ID:"b",Repository:"r",Branch:"main",From:"c1",To:"c2",DiffDigest:"e"}},ok:true},{name:"outage",err:errors.New("offline")},{name:"gap",rows:[]journal.Transition{{ID:"a",Repository:"r",Branch:"main",From:"c0",To:"c1",DiffDigest:"d"},{ID:"b",Repository:"r",Branch:"main",From:"c9",To:"c2",DiffDigest:"e"}}},{name:"incomplete",rows:[]journal.Transition{{ID:"a",Repository:"r",Branch:"main",From:"c0",To:"c1",DiffDigest:"d"}}}}{t.Run(tc.name,func(t *testing.T){ctx:=context.Background();s,e:=storage.Open(t.TempDir());if e!=nil{t.Fatal(e)};defer s.Close();l,e:=journal.Open(ctx,s);if e!=nil{t.Fatal(e)};w,e:=mergeingest.Reconcile(ctx,l,source{tc.rows,tc.err},"r","main","c2");if tc.ok{if e!=nil||w.Commit!="c2"{t.Fatalf("catchup failed %#v %v",w,e)}}else{if e==nil{t.Fatal("incomplete reconciliation succeeded")};rows,_:=l.Entries(ctx,"r","main");if len(rows)!=0{t.Fatal("partial batch advanced journal")}}})}}
+
+import (
+	"context"
+	"errors"
+	"github.com/kzs0/reviewd/internal/journal"
+	"github.com/kzs0/reviewd/internal/mergeingest"
+	"github.com/kzs0/reviewd/internal/storage"
+	"testing"
+)
+
+type source struct {
+	rows []journal.Transition
+	err  error
+}
+
+func (s source) Transitions(context.Context, string, string, string, string) ([]journal.Transition, error) {
+	return s.rows, s.err
+}
+func TestReconciliationCompleteness(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rows []journal.Transition
+		err  error
+		ok   bool
+	}{{name: "missing event catchup", rows: []journal.Transition{{ID: "a", Repository: "r", Branch: "main", From: "c0", To: "c1", DiffDigest: "d"}, {ID: "b", Repository: "r", Branch: "main", From: "c1", To: "c2", DiffDigest: "e"}}, ok: true}, {name: "outage", err: errors.New("offline")}, {name: "gap", rows: []journal.Transition{{ID: "a", Repository: "r", Branch: "main", From: "c0", To: "c1", DiffDigest: "d"}, {ID: "b", Repository: "r", Branch: "main", From: "c9", To: "c2", DiffDigest: "e"}}}, {name: "incomplete", rows: []journal.Transition{{ID: "a", Repository: "r", Branch: "main", From: "c0", To: "c1", DiffDigest: "d"}}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s, e := storage.Open(t.TempDir())
+			if e != nil {
+				t.Fatal(e)
+			}
+			defer s.Close()
+			l, e := journal.Open(ctx, s)
+			if e != nil {
+				t.Fatal(e)
+			}
+			w, e := mergeingest.Reconcile(ctx, l, source{tc.rows, tc.err}, "r", "main", "c2")
+			if tc.ok {
+				if e != nil || w.Commit != "c2" {
+					t.Fatalf("catchup failed %#v %v", w, e)
+				}
+			} else {
+				if e == nil {
+					t.Fatal("incomplete reconciliation succeeded")
+				}
+				rows, _ := l.Entries(ctx, "r", "main")
+				if len(rows) != 0 {
+					t.Fatal("partial batch advanced journal")
+				}
+			}
+		})
+	}
+}

@@ -23,25 +23,37 @@ type Expect struct {
 	// define job behaviour.
 	CITrust, ProjectPath  string
 	ChangedPaths, CIPaths []string
+	// Protections is "required" (the default, also when empty) or
+	// "advisory". Advisory approves regardless of the forge's protection
+	// settings and doesn't read them; it must be configured explicitly.
+	Protections string
 }
 
-// Facts are the live GitLab observations approval depends on. Native
-// protection settings are deliberately absent: approvals are submitted
-// whenever configured, and ChangeHarbor withdraws its own approval when a
-// merge request moves (see revalidation) instead of relying on the forge.
+func (x Expect) protectionsRequired() bool { return x.Protections == "" || x.Protections == "required" }
+
+// Facts are live GitLab observations. Known flags separate "unavailable"
+// (for example Premium-only endpoints on Free) from a definite false.
+// Protection facts are collected only when protections are required.
 type Facts struct {
-	Change          Change
-	UserID          string
-	Project         ProjectSettings
-	Pipeline        *Pipeline
-	PipelineParents []string
-	Jobs            []Job
+	Change                Change
+	UserID                string
+	Project               ProjectSettings
+	ApprovalSettings      ApprovalSettings
+	ApprovalSettingsKnown bool
+	Branch                ProtectedBranch
+	Rules                 []ApprovalRule
+	RulesKnown            bool
+	Pipeline              *Pipeline
+	PipelineParents       []string
+	Jobs                  []Job
 }
 
 func unavailable(e error) bool { c := statusCode(e); return c == 403 || c == 404 }
 
-// Collect reads every fact Evaluate needs. None of its endpoints are
-// Premium-only, so it works on every GitLab tier.
+// Collect reads every fact Evaluate needs. Premium-only endpoints that answer
+// 403/404 are recorded as unknown; any other failure is returned. With
+// advisory protections no protection setting is read, so nothing
+// Premium-only is called.
 func (c *Client) Collect(ctx context.Context, x Expect) (Facts, error) {
 	var f Facts
 	var e error
@@ -53,6 +65,21 @@ func (c *Client) Collect(ctx context.Context, x Expect) (Facts, error) {
 	}
 	if f.Project, e = c.ProjectSettings(ctx, x.ProjectID); e != nil {
 		return f, e
+	}
+	if x.protectionsRequired() {
+		if f.ApprovalSettings, e = c.ApprovalSettings(ctx, x.ProjectID); e == nil {
+			f.ApprovalSettingsKnown = true
+		} else if !unavailable(e) {
+			return f, e
+		}
+		if f.Branch, e = c.ProtectedBranch(ctx, x.ProjectID, x.TargetBranch); e != nil {
+			return f, e
+		}
+		if f.Rules, e = c.ApprovalState(ctx, x.ProjectID, x.IID); e == nil {
+			f.RulesKnown = true
+		} else if !unavailable(e) {
+			return f, e
+		}
 	}
 	if f.Change.HeadPipelineID == 0 {
 		return f, nil
@@ -92,10 +119,57 @@ func Evaluate(f Facts, x Expect) (map[string]bool, string) {
 		return nil, "GitLab merge request diff is not computed against the live target"
 	case x.BotUserID == "" || f.UserID != x.BotUserID:
 		return nil, "credential does not act as the configured bot user"
+	case x.Protections != "" && x.Protections != "required" && x.Protections != "advisory":
+		return nil, "unknown protection mode " + x.Protections
+	}
+	if reason := protections(f, x); reason != "" {
+		return nil, reason
 	}
 	if reason := ciTrust(f.Project.CIConfigPath, x); reason != "" {
 		return nil, reason
 	}
+	return pipelineEvidence(f, x)
+}
+
+// protections checks the forge's own protection settings. It only runs when
+// protections are required (the default).
+func protections(f Facts, x Expect) string {
+	if !x.protectionsRequired() {
+		return ""
+	}
+	switch {
+	case !f.Project.PipelineMustSucceed:
+		return "pipelines are not required to succeed before merge"
+	case f.Project.AllowSkippedPipeline:
+		return "skipped pipelines may be merged"
+	case !(f.Project.MergeMethod == "ff" || f.Project.MergeMethod == "rebase_merge" || f.Project.MergedResultsPipelines):
+		return "target freshness is not enforced natively (fast-forward, semi-linear or merged results pipelines required)"
+	case !f.ApprovalSettingsKnown || !f.RulesKnown:
+		return "approval settings or rules unavailable; GitLab Premium approval controls are required"
+	case !f.ApprovalSettings.ResetOnPush || f.ApprovalSettings.SelectiveCodeOwnerRemovals:
+		return "approvals are not reset on push"
+	case !f.Branch.Protected:
+		return "target branch is not protected"
+	case f.Branch.AllowForcePush:
+		return "target branch allows force push"
+	}
+	for _, r := range f.Rules {
+		if r.Approved || r.Required <= 0 {
+			continue
+		}
+		eligible := r.Type == "any_approver" || slices.Contains(r.EligibleIDs, x.BotUserID)
+		left := r.Required - len(r.ApprovedByIDs)
+		if !eligible || left > 1 || slices.Contains(r.ApprovedByIDs, x.BotUserID) {
+			return fmt.Sprintf("native approval rule %q requires additional human approval", r.Name)
+		}
+	}
+	return ""
+}
+
+// pipelineEvidence checks the trusted head pipeline and required jobs. It
+// always applies, whatever the protection mode.
+func pipelineEvidence(f Facts, x Expect) (map[string]bool, string) {
+	ch := f.Change
 	p := f.Pipeline
 	if ch.HeadPipelineID == 0 || p == nil {
 		return nil, "merge request has no head pipeline"

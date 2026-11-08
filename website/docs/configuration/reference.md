@@ -95,6 +95,10 @@ Under `repositories.<name>`:
 | --- | --- | --- |
 | `publish.approvals` | `shadow` | `off`: nothing. `shadow`: evaluate every live requirement and report *would approve* or *would withhold*. `submit`: approve the reviewed commit. |
 | `publish.comments` | `shadow` | `off`: nothing. `shadow`: render the comment only. `post`: create or update the owned summary comment. |
+| `publish.protections` | `required` | `required`: approve only when the forge's own protections are in place (GitLab merge and approval settings and protected branch; GitHub strict branch protection). `advisory`: approve regardless of protection settings. `doctor` then reports gaps as warnings. Must be set explicitly. |
+
+Whatever the protection mode, ChangeHarbor withdraws its own approval when the
+change or its target moves.
 
 ### `gitlab`
 

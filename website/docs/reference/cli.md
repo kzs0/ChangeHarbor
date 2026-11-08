@@ -19,7 +19,7 @@ Commands that read `changeharbor.yaml` accept `--config FILE` and
 | `reviewd config check` | Validates and prints the effective config, where each value came from, and the keys that invalidate reviews. |
 | `reviewd config schema` | Prints the JSON Schema. |
 | `reviewd config migrate --forge-config FILE [--server-config FILE]` | Converts legacy JSON configs to `changeharbor.yaml` and a lock, offline. |
-| `reviewd doctor [--repo NAME]` | Read-only GitLab preflight: errors for what ChangeHarbor needs (token, role, CI trust, mirror), warnings for forge protections that are off. |
+| `reviewd doctor [--repo NAME]` | Read-only GitLab preflight: token, role, CI trust, mirror and forge protections. Protection gaps are errors, or warnings with `publish.protections: advisory`. |
 
 ## Reviewing and publishing
 
