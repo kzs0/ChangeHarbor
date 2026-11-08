@@ -290,7 +290,7 @@ func TestDoctorE2E(t *testing.T) {
 	if len(x.fake.writes) != 0 {
 		t.Fatalf("doctor wrote: %v", x.fake.writes)
 	}
-	// Protection settings are advisory: approvals don't depend on them.
+	// Protections are required by default, so a gap is an error...
 	x.fake.protected = `{"name":"main","allow_force_push":true}`
 	x.fake.member = `{"id":5,"access_level":40}`
 	code, d, _ = x.doctor()
@@ -300,8 +300,21 @@ func TestDoctorE2E(t *testing.T) {
 			failed[c.Name] = c.Severity
 		}
 	}
-	if code != 0 || !d.OK || failed["branch_protection"] != "warning" || failed["project_role"] != "warning" {
+	if code != 4 || d.OK || failed["branch_protection"] != "error" || failed["project_role"] != "warning" {
 		t.Fatalf("exit %d failed %v", code, failed)
+	}
+	// ...and only a warning once protections are configured as advisory.
+	x.cfg.Protections = "advisory"
+	x.writeConfig()
+	code, d, _ = x.doctor()
+	failed = map[string]string{}
+	for _, c := range d.Checks {
+		if !c.OK {
+			failed[c.Name] = c.Severity
+		}
+	}
+	if code != 0 || !d.OK || failed["branch_protection"] != "warning" {
+		t.Fatalf("advisory exit %d failed %v", code, failed)
 	}
 	// What ChangeHarbor itself needs is still an error.
 	x.fake.tokenSelf = `{"active":true,"scopes":["read_api"]}`
@@ -419,6 +432,7 @@ func TestChangeURLRoundTrip(t *testing.T) {
 func TestMREventWithdrawsApprovalBeforeReviewingNewHead(t *testing.T) {
 	x := publishedFixture(t)
 	x.fake.approvalSettings = `{"reset_approvals_on_push":false}`
+	x.cfg.Protections = "advisory" // the forge keeps approvals on push
 	first := x.head
 	x.git("checkout", "-q", "feature")
 	os.WriteFile(filepath.Join(x.repo, "a"), []byte("second\n"), 0600)

@@ -190,14 +190,14 @@ func TestDiagnoseFindsMisconfiguration(t *testing.T) {
 		{"reporter role", "project_role", "error", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/members/all/5": body(`{"id":5,"access_level":20}`)}, nil},
 		{"not a member", "project_role", "error", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/members/all/5": status(404, `{}`)}, nil},
 		{"maintainer role", "project_role", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/members/all/5": body(`{"id":5,"access_level":40}`)}, nil},
-		{"pipelines optional", "pipelines_required", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9": body(`{"id":9,"merge_method":"ff","ci_config_path":"a@b/c"}`)}, nil},
-		{"skipped allowed", "skipped_pipelines", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9": body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"allow_merge_on_skipped_pipeline":true,"merge_method":"ff","ci_config_path":"a@b/c"}`)}, nil},
-		{"merge commits", "target_freshness", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9": body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"merge_method":"merge","ci_config_path":"a@b/c"}`)}, nil},
+		{"pipelines optional", "pipelines_required", "error", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9": body(`{"id":9,"merge_method":"ff","ci_config_path":"a@b/c"}`)}, nil},
+		{"skipped allowed", "skipped_pipelines", "error", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9": body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"allow_merge_on_skipped_pipeline":true,"merge_method":"ff","ci_config_path":"a@b/c"}`)}, nil},
+		{"merge commits", "target_freshness", "error", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9": body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"merge_method":"merge","ci_config_path":"a@b/c"}`)}, nil},
 		{"merge trains", "merge_trains", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9": body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"merge_method":"ff","merge_trains_enabled":true,"ci_config_path":"a@b/c"}`)}, nil},
-		{"free tier", "approval_reset", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/approvals": status(403, `{}`)}, nil},
-		{"approvals kept", "approval_reset", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/approvals": body(`{"reset_approvals_on_push":false}`)}, nil},
-		{"unprotected", "branch_protection", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/protected_branches/main": status(404, `{}`)}, nil},
-		{"force push", "branch_protection", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/protected_branches/main": body(`{"name":"main","allow_force_push":true}`)}, nil},
+		{"free tier", "approval_reset", "error", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/approvals": status(403, `{}`)}, nil},
+		{"approvals kept", "approval_reset", "error", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/approvals": body(`{"reset_approvals_on_push":false}`)}, nil},
+		{"unprotected", "branch_protection", "error", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/protected_branches/main": status(404, `{}`)}, nil},
+		{"force push", "branch_protection", "error", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/protected_branches/main": body(`{"name":"main","allow_force_push":true}`)}, nil},
 		{"bot not eligible", "approval_rules", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/approval_rules": body(`[{"name":"Security","rule_type":"regular","approvals_required":1,"eligible_approvers":[{"id":8}]}]`)}, nil},
 		{"two approvals", "approval_rules", "warning", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9/approval_rules": body(`[{"name":"Backend","rule_type":"regular","approvals_required":2,"eligible_approvers":[{"id":5},{"id":6}]}]`)}, nil},
 		{"in-repo CI config", "ci_trust", "error", map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9": body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"merge_method":"ff"}`)}, nil},
@@ -229,5 +229,30 @@ func TestDiagnosePropagatesServerErrors(t *testing.T) {
 	s := serve(t, diagnoseRoutes(map[string]func(http.ResponseWriter, *http.Request){"GET /projects/9": status(502, `{}`)}))
 	if _, e := NewClient(s.URL, "", s.Client(), 1<<20).Diagnose(context.Background(), diagnoseInput()); e == nil {
 		t.Fatal("server error hidden")
+	}
+}
+
+// Advisory protections downgrade protection findings to warnings; what
+// ChangeHarbor itself needs stays an error.
+func TestDiagnoseAdvisoryProtectionsAreWarnings(t *testing.T) {
+	s := serve(t, diagnoseRoutes(map[string]func(http.ResponseWriter, *http.Request){
+		"GET /projects/9":                         body(`{"id":9,"merge_method":"merge","ci_config_path":"a@b/c"}`),
+		"GET /projects/9/approvals":               status(403, `{}`),
+		"GET /projects/9/protected_branches/main": body(`{"name":"main","allow_force_push":true}`),
+		"GET /projects/9/approval_rules":          status(403, `{}`),
+	}))
+	in := diagnoseInput()
+	in.Protections = "advisory"
+	cs, e := NewClient(s.URL, "", s.Client(), 1<<20).Diagnose(context.Background(), in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, name := range []string{"pipelines_required", "target_freshness", "approval_reset", "branch_protection", "approval_rules"} {
+		if c := findCheck(cs, name); c.OK || c.Severity != "warning" {
+			t.Fatalf("%s: %+v", name, c)
+		}
+	}
+	if Failed(cs) {
+		t.Fatal("advisory protections reported as a failure")
 	}
 }
