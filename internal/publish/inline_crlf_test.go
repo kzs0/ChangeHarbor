@@ -48,3 +48,42 @@ func TestPresentButUnplaceableFindingIsNotOutdated(t *testing.T) {
 		t.Fatalf("present finding marked outdated: %+v %v updates %d", out, e, r.updates)
 	}
 }
+
+// Under CommonMark a line of at least as many backticks as the opening fence
+// closes it. Model text must never be able to do that, or mentions, HTML and
+// markup after it would render outside the fence.
+func TestRenderInlineFenceCannotBeClosedByModelText(t *testing.T) {
+	for _, run := range []string{"```", "````", "``````````"} {
+		f := finding(run+"\n@all <img src=x onerror=alert(1)>", 1, "new")
+		f.Consequence = run + " trailing-model-text"
+		body, e := RenderInline(InlineContent{ChangeKey: inlineKey, RunID: "run1", Finding: f})
+		if e != nil {
+			t.Fatal(e)
+		}
+		lines := strings.Split(body, "\n")
+		open := -1
+		for i, l := range lines {
+			if strings.HasPrefix(l, "```") {
+				open = i
+				break
+			}
+		}
+		if open < 0 {
+			t.Fatal("no fence")
+		}
+		width := len(strings.TrimSuffix(lines[open], "text"))
+		closing, last := -1, -1
+		for i := open + 1; i < len(lines); i++ {
+			trimmed := strings.TrimSpace(lines[i])
+			if closing < 0 && trimmed != "" && strings.Trim(trimmed, "`") == "" && len(trimmed) >= width {
+				closing = i
+			}
+			if strings.Contains(lines[i], "trailing-model-text") {
+				last = i
+			}
+		}
+		if closing < 0 || closing < last {
+			t.Fatalf("model text closes the fence early (%q):\n%s", run, body)
+		}
+	}
+}

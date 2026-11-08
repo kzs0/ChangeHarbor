@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -529,5 +530,36 @@ func TestGitLabInlineE2ESkipsUnplaceableFindings(t *testing.T) {
 	o := decodeInline(t, out)
 	if code != 0 || o.Inline.State != "published" || len(o.Inline.Created) != 1 || len(o.Inline.Skipped) != 1 || d.posts != 1 {
 		t.Fatalf("exit %d %+v %s posts %d", code, o.Inline, stderr, d.posts)
+	}
+}
+
+// GitLab positions carry diff_refs.base_sha and diff_refs.start_sha, which
+// differ once the target branch has moved past the merge base.
+func TestGitLabInlineE2EPositionUsesStartAndBaseSHAs(t *testing.T) {
+	x, d := inlineGitLab(t)
+	x.fake.mergeBase = strings.Repeat("d", 40)
+	run := x.inlineReview("shas", fNew)
+	if code, _, stderr := x.comment(run); code != 0 || len(d.list) != 1 {
+		t.Fatalf("exit %d %s", code, stderr)
+	}
+	p := d.list[0].Position
+	if p["base_sha"] != strings.Repeat("d", 40) || p["start_sha"] != x.base || p["head_sha"] != x.head {
+		t.Fatalf("position shas %v", p)
+	}
+}
+
+// If the MR head moves between the freshness check and the write, GitLab
+// discussions are not created and the refusal is definite (retryable).
+func TestGitLabCreateInlineRefusesMovedHead(t *testing.T) {
+	x, d := inlineGitLab(t)
+	c, e := loadForgeConfig(x.config)
+	if e != nil {
+		t.Fatal(e)
+	}
+	f := &forgeInline{forgeComments{c: c, provenance: forgeProvenance{Capture: forgeCapture{Number: 7, Head: x.head, Target: x.base}}}}
+	x.fake.head = strings.Repeat("b", 40)
+	_, e = f.CreateInline(context.Background(), []publish.InlineTarget{{Fingerprint: "0123456789abcdef", Path: "a", OldPath: "a", NewPath: "a", Side: "new", Line: 1, Body: "x"}})
+	if !errors.Is(e, publish.ErrNotWritten) || d.posts != 0 {
+		t.Fatalf("moved head not refused: %v posts %d", e, d.posts)
 	}
 }
