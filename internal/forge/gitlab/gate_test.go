@@ -14,13 +14,14 @@ const (
 )
 
 func goodExpect() Expect {
-	return Expect{ProjectID: "9", IID: 7, Head: head, Target: target, MergeBase: "def", TargetBranch: "main", BotUserID: "5", RequiredJobs: map[string]string{"test": "project:9"}}
+	return Expect{ProjectID: "9", ProjectPath: "group/app", IID: 7, Head: head, Target: target, MergeBase: "def", TargetBranch: "main", BotUserID: "5", RequiredJobs: map[string]string{"test": "project:9"},
+		CITrust: "external_config", ChangedPaths: []string{"src/a.go"}}
 }
 func goodFacts() Facts {
 	return Facts{
 		Change:                Change{RepositoryID: "9", SourceRepositoryID: "9", HeadOID: head, TargetOID: target, MergeBaseOID: "def", TargetBranch: "main", State: "opened", HeadPipelineID: 500},
 		UserID:                "5",
-		Project:               ProjectSettings{PipelineMustSucceed: true, MergeMethod: "ff"},
+		Project:               ProjectSettings{PipelineMustSucceed: true, MergeMethod: "ff", CIConfigPath: ".gitlab-ci.yml@group/ci-config"},
 		ApprovalSettings:      ApprovalSettings{ResetOnPush: true},
 		ApprovalSettingsKnown: true,
 		Branch:                ProtectedBranch{Protected: true},
@@ -162,7 +163,7 @@ func collectRoutes(over map[string]func(http.ResponseWriter, *http.Request)) map
 		"GET /projects/9/merge_requests/7":         body(mrJSON),
 		"GET /projects/9/repository/branches/main": body(`{"name":"main","commit":{"id":"456"}}`),
 		"GET /user":                                       body(`{"id":5}`),
-		"GET /projects/9":                                 body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"merge_method":"ff"}`),
+		"GET /projects/9":                                 body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"merge_method":"ff","ci_config_path":".gitlab-ci.yml@group/ci-config"}`),
 		"GET /projects/9/approvals":                       body(`{"reset_approvals_on_push":true}`),
 		"GET /projects/9/protected_branches/main":         body(`{"name":"main","allow_force_push":false}`),
 		"GET /projects/9/merge_requests/7/approval_state": body(`{"rules":[{"name":"M","rule_type":"regular","approvals_required":1,"approved":false,"eligible_approvers":[{"id":5}],"approved_by":[]}]}`),
@@ -231,5 +232,70 @@ func TestCollectFetchesMergedResultParents(t *testing.T) {
 	f, e := NewClient(s.URL, "", s.Client(), 1<<20).Collect(context.Background(), goodExpect())
 	if e != nil || len(f.PipelineParents) != 2 {
 		t.Fatalf("%+v %v", f, e)
+	}
+}
+
+// With advisory protections Collect never reads protection settings, so
+// approvals also work on GitLab Free (no Premium-only call is made).
+func TestCollectAdvisoryReadsNoProtectionSettings(t *testing.T) {
+	forbid := func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("protection endpoint read: %s", r.URL.Path)
+		w.WriteHeader(500)
+	}
+	s := serve(t, collectRoutes(map[string]func(http.ResponseWriter, *http.Request){
+		"GET /projects/9":                                 body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":false,"allow_merge_on_skipped_pipeline":true,"merge_method":"merge","ci_config_path":".gitlab-ci.yml@group/ci-config"}`),
+		"GET /projects/9/approvals":                       forbid,
+		"GET /projects/9/protected_branches/main":         forbid,
+		"GET /projects/9/merge_requests/7/approval_state": forbid,
+	}))
+	x := goodExpect()
+	x.Protections = "advisory"
+	f, e := NewClient(s.URL, "", s.Client(), 1<<20).Collect(context.Background(), x)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, reason := Evaluate(f, x); reason != "" {
+		t.Fatalf("withheld on native protection settings: %s", reason)
+	}
+}
+
+// Protections are required unless explicitly configured as advisory. With
+// advisory protections, every protection gap that withholds by default is
+// approved instead.
+func TestEvaluateAdvisoryProtections(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(*Facts)
+	}{
+		{"pipelines optional", func(f *Facts) { f.Project.PipelineMustSucceed = false }},
+		{"skipped pipelines mergeable", func(f *Facts) { f.Project.AllowSkippedPipeline = true }},
+		{"merge commit without merged results", func(f *Facts) { f.Project.MergeMethod = "merge" }},
+		{"approval settings unavailable", func(f *Facts) { f.ApprovalSettingsKnown = false }},
+		{"approvals survive push", func(f *Facts) { f.ApprovalSettings.ResetOnPush = false }},
+		{"unprotected target", func(f *Facts) { f.Branch.Protected = false }},
+		{"force push allowed", func(f *Facts) { f.Branch.AllowForcePush = true }},
+		{"approval rules unavailable", func(f *Facts) { f.RulesKnown = false }},
+		{"two humans still required", func(f *Facts) { f.Rules[0].Required = 2 }},
+		{"bot not eligible", func(f *Facts) { f.Rules[0].EligibleIDs = []string{"6"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, x := goodFacts(), goodExpect()
+			tc.mut(&f)
+			if _, reason := Evaluate(f, x); reason == "" {
+				t.Fatal("protection gap approved without opting in")
+			}
+			x.Protections = "advisory"
+			if _, reason := Evaluate(f, x); reason != "" {
+				t.Fatalf("advisory protections still withheld: %s", reason)
+			}
+		})
+	}
+}
+
+func TestEvaluateRejectsUnknownProtectionMode(t *testing.T) {
+	x := goodExpect()
+	x.Protections = "off"
+	if _, reason := Evaluate(goodFacts(), x); !strings.Contains(reason, "protection") {
+		t.Fatalf("reason %q", reason)
 	}
 }

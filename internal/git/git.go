@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -202,4 +203,40 @@ func (r Reader) Diff(ctx context.Context, base, head string) (Diff, error) {
 	patch, err := r.run(ctx, append(args, "--patch", "--")...)
 	d.Patch = string(patch)
 	return d, err
+}
+
+var (
+	remoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	refspec    = regexp.MustCompile(`^\+refs/[A-Za-z0-9._/-]+:refs/[A-Za-z0-9._/-]+$`)
+)
+
+// Fetch updates exactly the given refspecs from a remote already configured in
+// the repository. The remote must be a configured name, never a URL or path;
+// refspecs must be explicit refs/ mappings. Hooks are disabled, tags are not
+// fetched and credentials come only from the repository's own configuration.
+func (r Reader) Fetch(ctx context.Context, remote string, refspecs ...string) error {
+	if !remoteName.MatchString(remote) || len(refspecs) == 0 {
+		return fmt.Errorf("unsafe fetch request")
+	}
+	for _, s := range refspecs {
+		if !refspec.MatchString(s) || strings.Contains(s, "..") || strings.Contains(s, "//") {
+			return fmt.Errorf("unsafe refspec")
+		}
+	}
+	if _, e := r.run(ctx, "config", "--local", "--get", "remote."+remote+".url"); e != nil {
+		return fmt.Errorf("remote %q is not configured in the mirror", remote)
+	}
+	args := append([]string{"fetch", "--no-tags", "--no-write-fetch-head", "--update-head-ok", "--no-recurse-submodules", "--end-of-options", remote}, refspecs...)
+	_, e := r.run(ctx, args...)
+	return e
+}
+
+// HasRemote reports whether the repository's own configuration defines the
+// named remote.
+func (r Reader) HasRemote(ctx context.Context, name string) bool {
+	if !remoteName.MatchString(name) {
+		return false
+	}
+	_, e := r.run(ctx, "config", "--local", "--get", "remote."+name+".url")
+	return e == nil
 }

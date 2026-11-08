@@ -263,3 +263,60 @@ func (c *Client) UpdateComment(ctx context.Context, owner, repo, id, body string
 	}
 	return x.comment()
 }
+
+// Repository is a repository's identity looked up by owner and name.
+type Repository struct {
+	ID, DefaultBranch string
+}
+
+func (c *Client) Repository(ctx context.Context, owner, repo string) (Repository, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return Repository{}, e
+	}
+	var x struct {
+		ID            int64  `json:"id"`
+		DefaultBranch string `json:"default_branch"`
+		FullName      string `json:"full_name"`
+	}
+	if e = c.request(ctx, "GET", p, nil, &x); e != nil {
+		return Repository{}, e
+	}
+	if x.ID <= 0 || x.DefaultBranch == "" || !strings.EqualFold(x.FullName, owner+"/"+repo) {
+		return Repository{}, errors.New("repository identity mismatch")
+	}
+	return Repository{ID: fmt.Sprint(x.ID), DefaultBranch: x.DefaultBranch}, nil
+}
+
+// CurrentUser returns the token's user ID. GitHub App installation tokens
+// cannot call this endpoint.
+func (c *Client) CurrentUser(ctx context.Context) (string, error) {
+	var x struct {
+		ID int64 `json:"id"`
+	}
+	if e := c.request(ctx, "GET", "/user", nil, &x); e != nil {
+		return "", e
+	}
+	if x.ID <= 0 {
+		return "", errors.New("missing GitHub user identity")
+	}
+	return fmt.Sprint(x.ID), nil
+}
+
+// DismissReview withdraws a review ChangeHarbor submitted. A review that is
+// already dismissed or gone (404/422) counts as withdrawn.
+func (c *Client) DismissReview(ctx context.Context, owner, repo string, number int, reviewID, message string) error {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return e
+	}
+	if n, err := strconv.ParseInt(reviewID, 10, 64); err != nil || n <= 0 || strconv.FormatInt(n, 10) != reviewID || number <= 0 || message == "" {
+		return errors.New("invalid dismissal request")
+	}
+	e = c.request(ctx, "PUT", fmt.Sprintf("%s/pulls/%d/reviews/%s/dismissals", p, number, reviewID), map[string]string{"message": message, "event": "DISMISS"}, nil)
+	var se *StatusError
+	if errors.As(e, &se) && (se.Code == 404 || se.Code == 422) {
+		return nil
+	}
+	return e
+}
