@@ -33,3 +33,6 @@ follow redirects, cap response bytes and return `*StatusError` for non-2xx.
   approvals to reconcile "already approved". 401 without approval, 403, 404,
   409 and 422 are `ErrRejected` (definitely not written); 5xx and transport
   errors are ambiguous. The remote ID is `gitlab:<project>:<iid>:<head>:<bot>`.
+- `Comments` lists MR notes excluding system notes. `CreateNote`/`UpdateNote`
+  return the written note with its author; 401/403/404/422 are `ErrRejected`,
+  other failures ambiguous.

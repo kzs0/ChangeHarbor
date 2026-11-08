@@ -19,6 +19,7 @@ import (
 	gitreader "github.com/kzs0/reviewd/internal/git"
 	"github.com/kzs0/reviewd/internal/policy"
 	"github.com/kzs0/reviewd/internal/publish"
+	"github.com/kzs0/reviewd/internal/report"
 	"github.com/kzs0/reviewd/internal/review"
 	"github.com/kzs0/reviewd/internal/storage"
 )
@@ -40,11 +41,13 @@ type forgeConfig struct {
 	Branch             string            `json:"branch"`
 	Mode               string            `json:"mode"`
 	RequiredChecks     map[string]string `json:"required_checks"`
-	// GitLab only. BotUserID is the numeric user the token must act as;
-	// TokenScheme is "private-token" (default) or "bearer". Omitted when
-	// empty so existing configuration digests are unchanged.
+	// BotUserID is the numeric user the token must act as (GitLab approvals
+	// and comments on either forge). TokenScheme is GitLab only:
+	// "private-token" (default) or "bearer". CommentMode is "" (off) or
+	// "post". All are omitted when empty so configuration digests are stable.
 	BotUserID   string `json:"bot_user_id,omitempty"`
 	TokenScheme string `json:"token_scheme,omitempty"`
+	CommentMode string `json:"comment_mode,omitempty"`
 }
 type forgeCapture struct {
 	Provider, RepositoryID, SourceRepositoryID, Head, Target, URL string
@@ -81,8 +84,17 @@ func loadForgeConfig(path string) (forgeConfig, error) {
 	if c.Provider == "gitlab" && (c.ProjectID == "" || c.Repository == "") {
 		return c, errors.New("GitLab project ID/web path required")
 	}
-	if c.Provider == "github" && (c.BotUserID != "" || c.TokenScheme != "") {
-		return c, errors.New("bot_user_id and token_scheme are GitLab settings")
+	if c.Provider == "github" && c.TokenScheme != "" {
+		return c, errors.New("token_scheme is a GitLab setting")
+	}
+	if c.BotUserID != "" && !numericID.MatchString(c.BotUserID) {
+		return c, errors.New("bot_user_id must be a numeric user ID")
+	}
+	if c.CommentMode != "" && c.CommentMode != "post" {
+		return c, errors.New("comment_mode must be empty (off) or post")
+	}
+	if c.CommentMode == "post" && c.BotUserID == "" {
+		return c, errors.New("comment_mode post requires bot_user_id")
 	}
 	if c.Provider == "gitlab" {
 		if c.ProjectID != c.RepositoryID {
@@ -90,9 +102,6 @@ func loadForgeConfig(path string) (forgeConfig, error) {
 		}
 		if c.TokenScheme != "" && c.TokenScheme != "private-token" && c.TokenScheme != "bearer" {
 			return c, errors.New("GitLab token_scheme must be private-token or bearer")
-		}
-		if c.BotUserID != "" && !numericID.MatchString(c.BotUserID) {
-			return c, errors.New("GitLab bot_user_id must be a numeric user ID")
 		}
 		if c.Mode == "submit" && c.BotUserID == "" {
 			return c, errors.New("GitLab submit mode requires bot_user_id")
@@ -206,7 +215,13 @@ func fileDigest(path string) (string, error) {
 	p.AutoApproveMax = 0
 	return identityID(p), nil
 }
-func forgeConfigDigest(c forgeConfig) string { c.Mode = ""; return identityID(c) }
+
+// forgeConfigDigest covers review-relevant trusted mapping only; publication
+// switches and the bot identity can change without invalidating reviews.
+func forgeConfigDigest(c forgeConfig) string {
+	c.Mode, c.CommentMode, c.BotUserID = "", "", ""
+	return identityID(c)
+}
 func hostPolicyItem(minimum int, decision *policy.Decision, d gitreader.Diff, path string) (contextpack.Item, string, error) {
 	facts := struct {
 		EnforcedMinimum            int
@@ -662,4 +677,138 @@ func (g *gitlabPublication) Approve(ctx context.Context, head string) (string, e
 		return "", fmt.Errorf("%w: %v", publish.ErrNotWritten, e)
 	}
 	return id, e
+}
+
+// commentCommand creates or updates the single owned summary comment for a
+// durable URL review. With comment_mode off it only prints the body.
+func commentCommand(ctx context.Context, args []string) (int, error) {
+	f := flag.NewFlagSet("comment", flag.ContinueOnError)
+	runID := f.String("run", "", "durable forge review ID")
+	config := f.String("forge-config", "", "trusted forge configuration")
+	state := f.String("state", ".reviewd", "state directory")
+	if f.Parse(args) != nil || *runID == "" || *config == "" || f.NArg() != 0 {
+		return 2, nil
+	}
+	c, e := loadForgeConfig(*config)
+	if e != nil {
+		return 2, e
+	}
+	s, e := storage.Open(*state)
+	if e != nil {
+		return 1, e
+	}
+	defer s.Close()
+	b, e := s.Load(ctx, "review_provenance", *runID)
+	if e != nil {
+		return 4, errors.New("review has no immutable forge provenance")
+	}
+	var p forgeProvenance
+	if e = json.Unmarshal(b, &p); e != nil {
+		return 1, e
+	}
+	if b, e = s.Load(ctx, "run", *runID); e != nil {
+		return 1, e
+	}
+	var r review.Result
+	if e = json.Unmarshal(b, &r); e != nil {
+		return 1, e
+	}
+	if p.ConfigDigest != forgeConfigDigest(c) || p.PackageDigest != r.Package.Digest {
+		return 4, errors.New("trusted configuration or review package changed")
+	}
+	rendered, e := report.RenderReview(r)
+	if e != nil {
+		return 1, e
+	}
+	key := fmt.Sprintf("%s:%s:%d", c.Provider, c.RepositoryID, p.Capture.Number)
+	body, e := publish.RenderComment(publish.CommentContent{ChangeKey: key, RunID: *runID, Head: p.Capture.Head, Status: r.Status,
+		ModelRisk: r.Review.ModelMergeRisk, Minimum: r.Minimum, EffectiveRisk: r.EffectiveRisk, Threshold: r.Threshold, Report: rendered.Markdown})
+	if e != nil {
+		return 1, e
+	}
+	if c.CommentMode != "post" {
+		return 0, emit(publish.CommentPublication{RunID: *runID, ChangeKey: key, State: "shadow", Reason: "comment posting disabled", Body: body})
+	}
+	service := publish.CommentService{Remote: &forgeComments{c: c, provenance: p}, Audit: s}
+	out, e := service.Publish(ctx, publish.CommentRequest{RunID: *runID, ChangeKey: key, BotID: c.BotUserID, Body: body})
+	if e != nil {
+		return 1, e
+	}
+	if e = emit(out); e != nil {
+		return 1, e
+	}
+	if out.State != "published" {
+		return 4, nil
+	}
+	return 0, nil
+}
+
+type forgeComments struct {
+	c          forgeConfig
+	provenance forgeProvenance
+}
+
+func (f *forgeComments) Fresh(ctx context.Context) (string, error) {
+	live, e := captureForge(ctx, f.c, f.provenance.Capture.URL)
+	if e != nil {
+		return "", e
+	}
+	if live.Head != f.provenance.Capture.Head || live.Target != f.provenance.Capture.Target {
+		return "reviewed HEAD or target changed", nil
+	}
+	return "", nil
+}
+
+// Identity verifies GitLab tokens up front. GitHub App installation tokens
+// cannot call /user, so GitHub identity is verified from write responses.
+func (f *forgeComments) Identity(ctx context.Context) (string, error) {
+	if f.c.Provider != "gitlab" {
+		return "", nil
+	}
+	return gitlabClient(f.c).CurrentUser(ctx)
+}
+
+func (f *forgeComments) List(ctx context.Context) ([]publish.RemoteComment, error) {
+	var out []publish.RemoteComment
+	if f.c.Provider == "gitlab" {
+		cs, e := gitlabClient(f.c).Comments(ctx, f.c.ProjectID, f.provenance.Capture.Number, 20)
+		for _, x := range cs {
+			out = append(out, publish.RemoteComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID})
+		}
+		return out, e
+	}
+	cs, e := f.github().Comments(ctx, f.c.Owner, f.c.Repository, f.provenance.Capture.Number, 20)
+	for _, x := range cs {
+		out = append(out, publish.RemoteComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID})
+	}
+	return out, e
+}
+
+func (f *forgeComments) github() *gh.Client {
+	return gh.NewClient(f.c.APIBase, os.Getenv(f.c.TokenEnv), nil, 1<<20)
+}
+
+func (f *forgeComments) Create(ctx context.Context, body string) (publish.RemoteComment, error) {
+	if f.c.Provider == "gitlab" {
+		x, e := gitlabClient(f.c).CreateNote(ctx, f.c.ProjectID, f.provenance.Capture.Number, body)
+		return publish.RemoteComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID}, commentWriteError(e)
+	}
+	x, e := f.github().CreateComment(ctx, f.c.Owner, f.c.Repository, f.provenance.Capture.Number, body)
+	return publish.RemoteComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID}, commentWriteError(e)
+}
+
+func (f *forgeComments) Update(ctx context.Context, id, body string) (publish.RemoteComment, error) {
+	if f.c.Provider == "gitlab" {
+		x, e := gitlabClient(f.c).UpdateNote(ctx, f.c.ProjectID, f.provenance.Capture.Number, id, body)
+		return publish.RemoteComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID}, commentWriteError(e)
+	}
+	x, e := f.github().UpdateComment(ctx, f.c.Owner, f.c.Repository, id, body)
+	return publish.RemoteComment{ID: x.ID, Body: x.Body, AuthorID: x.AuthorID}, commentWriteError(e)
+}
+
+func commentWriteError(e error) error {
+	if errors.Is(e, gl.ErrRejected) || errors.Is(e, gh.ErrRejected) {
+		return fmt.Errorf("%w: %v", publish.ErrNotWritten, e)
+	}
+	return e
 }

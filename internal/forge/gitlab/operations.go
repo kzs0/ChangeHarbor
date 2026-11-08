@@ -304,6 +304,7 @@ func (c *Client) Comments(ctx context.Context, id string, number, maxPages int) 
 		var xs []struct {
 			ID     int64
 			Body   string
+			System bool
 			Author struct{ ID int64 }
 		}
 		if e := c.request(ctx, "GET", fmt.Sprintf("/projects/%s/merge_requests/%d/notes?per_page=100&page=%d", id, number, page), nil, &xs); e != nil {
@@ -313,6 +314,9 @@ func (c *Client) Comments(ctx context.Context, id string, number, maxPages int) 
 			if x.ID <= 0 || x.Author.ID <= 0 {
 				return nil, errors.New("invalid comment identity")
 			}
+			if x.System {
+				continue
+			}
 			out = append(out, Comment{fmt.Sprint(x.ID), x.Body, fmt.Sprint(x.Author.ID)})
 		}
 		if len(xs) < 100 {
@@ -321,36 +325,52 @@ func (c *Client) Comments(ctx context.Context, id string, number, maxPages int) 
 	}
 	return nil, errors.New("comment pagination cap exceeded")
 }
-func (c *Client) UpsertComment(ctx context.Context, id string, number int, botID, marker, body string) (string, error) {
-	if botID == "" || marker == "" || !strings.Contains(body, marker) {
-		return "", errors.New("owned comment identity required")
+
+type writtenNote struct {
+	ID     int64  `json:"id"`
+	Body   string `json:"body"`
+	Author struct {
+		ID int64 `json:"id"`
+	} `json:"author"`
+}
+
+func (w writtenNote) comment() (Comment, error) {
+	if w.ID <= 0 || w.Author.ID <= 0 {
+		return Comment{}, errors.New("ambiguous note response")
 	}
-	cs, e := c.Comments(ctx, id, number, 10)
-	if e != nil {
-		return "", e
+	return Comment{ID: fmt.Sprint(w.ID), Body: w.Body, AuthorID: fmt.Sprint(w.Author.ID)}, nil
+}
+
+func noteRejection(e error) error {
+	switch statusCode(e) {
+	case 401, 403, 404, 422:
+		return fmt.Errorf("%w: status %d", ErrRejected, statusCode(e))
 	}
-	note := ""
-	for _, x := range cs {
-		if x.AuthorID == botID && strings.Contains(x.Body, marker) {
-			if note != "" {
-				return "", errors.New("ambiguous owned comments")
-			}
-			note = x.ID
-		}
-	}
-	path := fmt.Sprintf("/projects/%s/merge_requests/%d/notes", id, number)
-	method := "POST"
-	if note != "" {
-		method = "PUT"
-		path += "/" + note
+	return e
+}
+
+// CreateNote posts a merge request note and returns it with its author.
+func (c *Client) CreateNote(ctx context.Context, id string, number int, body string) (Comment, error) {
+	if !numeric.MatchString(id) || number <= 0 || body == "" {
+		return Comment{}, errors.New("invalid note request")
 	}
 	b, _ := json.Marshal(map[string]string{"body": body})
-	var x struct{ ID int64 }
-	if e = c.request(ctx, method, path, bytes.NewReader(b), &x); e != nil {
-		return "", e
+	var x writtenNote
+	if e := c.request(ctx, "POST", fmt.Sprintf("/projects/%s/merge_requests/%d/notes", id, number), bytes.NewReader(b), &x); e != nil {
+		return Comment{}, noteRejection(e)
 	}
-	if x.ID <= 0 {
-		return "", errors.New("ambiguous comment response")
+	return x.comment()
+}
+
+// UpdateNote replaces the body of an existing merge request note.
+func (c *Client) UpdateNote(ctx context.Context, id string, number int, noteID, body string) (Comment, error) {
+	if !numeric.MatchString(id) || number <= 0 || !numeric.MatchString(noteID) || body == "" {
+		return Comment{}, errors.New("invalid note request")
 	}
-	return fmt.Sprint(x.ID), nil
+	b, _ := json.Marshal(map[string]string{"body": body})
+	var x writtenNote
+	if e := c.request(ctx, "PUT", fmt.Sprintf("/projects/%s/merge_requests/%d/notes/%s", id, number, noteID), bytes.NewReader(b), &x); e != nil {
+		return Comment{}, noteRejection(e)
+	}
+	return x.comment()
 }

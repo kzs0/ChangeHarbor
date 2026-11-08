@@ -45,6 +45,7 @@ type fakeGitLab struct {
 	approvalsBody string
 
 	approveSHAs []string
+	extra       func(http.ResponseWriter, *http.Request) bool // optional additional routes
 	writes      []string
 	requests    int
 	auth        []string
@@ -71,6 +72,9 @@ func (f *fakeGitLab) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.auth = append(f.auth, r.Header.Get("Private-Token")+"|"+r.Header.Get("Authorization"))
 	if r.Method != http.MethodGet {
 		f.writes = append(f.writes, r.Method+" "+r.URL.EscapedPath())
+	}
+	if f.extra != nil && f.extra(w, r) {
+		return
 	}
 	reply := func(code int, s string) { w.WriteHeader(code); io.WriteString(w, s) }
 	js := func(v any) string { b, _ := json.Marshal(v); return string(b) }
@@ -206,6 +210,7 @@ var savedRun = regexp.MustCompile(`saved forge review: ([0-9a-f]+)`)
 
 func (x *gitlabFixture) review() string {
 	x.t.Helper()
+	writesBefore := len(x.fake.writes)
 	code, out, stderr := runCLI(x.t, "review", "--url", "https://gitlab.example/group/app/-/merge_requests/7", "--forge-config", x.config, "--state", x.state, "--response", "../../testdata/review-response.json")
 	if code != 0 {
 		x.t.Fatalf("review exit %d\nstdout %s\nstderr %s", code, out, stderr)
@@ -214,8 +219,8 @@ func (x *gitlabFixture) review() string {
 	if m == nil {
 		x.t.Fatalf("no run ID in %q", stderr)
 	}
-	if len(x.fake.writes) != 0 {
-		x.t.Fatalf("review wrote to GitLab: %v", x.fake.writes)
+	if len(x.fake.writes) != writesBefore {
+		x.t.Fatalf("review wrote to GitLab: %v", x.fake.writes[writesBefore:])
 	}
 	return m[1]
 }

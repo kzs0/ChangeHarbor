@@ -48,7 +48,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, out an
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("GitHub status %d", res.StatusCode)
+		return &StatusError{Code: res.StatusCode}
 	}
 	b, e := io.ReadAll(io.LimitReader(res.Body, c.max+1))
 	if e != nil {
@@ -196,38 +196,70 @@ func (c *Client) Comments(ctx context.Context, owner, repo string, number, maxPa
 	return nil, errors.New("comment pagination cap exceeded")
 }
 
-// UpsertComment uses a trusted bot account ID and stable marker. Unknown write
-// completion must be reconciled with Comments before the host retries.
-func (c *Client) UpsertComment(ctx context.Context, owner, repo string, number int, botID, marker, body string) (string, error) {
-	if botID == "" || marker == "" || !strings.Contains(body, marker) {
-		return "", errors.New("owned comment identity required")
-	}
-	cs, e := c.Comments(ctx, owner, repo, number, 10)
-	if e != nil {
-		return "", e
-	}
-	id := ""
-	for _, x := range cs {
-		if x.AuthorID == botID && strings.Contains(x.Body, marker) {
-			if id != "" {
-				return "", errors.New("ambiguous owned comments")
-			}
-			id = x.ID
+// StatusError reports a non-2xx GitHub response.
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("GitHub status %d", e.Code) }
+
+// ErrRejected marks a definite refusal: GitHub answered and nothing was
+// written. Transport errors and 5xx responses stay ambiguous.
+var ErrRejected = errors.New("GitHub rejected write")
+
+func rejection(e error) error {
+	var se *StatusError
+	if errors.As(e, &se) {
+		switch se.Code {
+		case 401, 403, 404, 410, 422:
+			return fmt.Errorf("%w: status %d", ErrRejected, se.Code)
 		}
 	}
-	p, _ := repoPath(owner, repo)
-	path := fmt.Sprintf("%s/issues/%d/comments", p, number)
-	method := "POST"
-	if id != "" {
-		path = p + "/issues/comments/" + id
-		method = "PATCH"
+	return e
+}
+
+type writtenComment struct {
+	ID   int64  `json:"id"`
+	Body string `json:"body"`
+	User struct {
+		ID int64 `json:"id"`
+	} `json:"user"`
+}
+
+func (w writtenComment) comment() (Comment, error) {
+	if w.ID <= 0 || w.User.ID <= 0 {
+		return Comment{}, errors.New("ambiguous comment response")
 	}
-	var x struct{ ID int64 }
-	if e = c.request(ctx, method, path, map[string]string{"body": body}, &x); e != nil {
-		return "", e
+	return Comment{ID: fmt.Sprint(w.ID), Body: w.Body, AuthorID: fmt.Sprint(w.User.ID)}, nil
+}
+
+// CreateComment posts an issue comment on a pull request and returns the
+// written comment including its author for identity verification.
+func (c *Client) CreateComment(ctx context.Context, owner, repo string, number int, body string) (Comment, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return Comment{}, e
 	}
-	if x.ID <= 0 {
-		return "", errors.New("ambiguous comment response")
+	if number <= 0 || body == "" {
+		return Comment{}, errors.New("invalid comment request")
 	}
-	return fmt.Sprint(x.ID), nil
+	var x writtenComment
+	if e = c.request(ctx, "POST", fmt.Sprintf("%s/issues/%d/comments", p, number), map[string]string{"body": body}, &x); e != nil {
+		return Comment{}, rejection(e)
+	}
+	return x.comment()
+}
+
+// UpdateComment replaces the body of an existing issue comment by ID.
+func (c *Client) UpdateComment(ctx context.Context, owner, repo, id, body string) (Comment, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return Comment{}, e
+	}
+	if n, err := strconv.ParseInt(id, 10, 64); err != nil || n <= 0 || strconv.FormatInt(n, 10) != id || body == "" {
+		return Comment{}, errors.New("invalid comment request")
+	}
+	var x writtenComment
+	if e = c.request(ctx, "PATCH", p+"/issues/comments/"+id, map[string]string{"body": body}, &x); e != nil {
+		return Comment{}, rejection(e)
+	}
+	return x.comment()
 }
