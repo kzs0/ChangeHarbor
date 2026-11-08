@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/kzs0/reviewd/internal/config"
@@ -18,6 +19,7 @@ import (
 	gitreader "github.com/kzs0/reviewd/internal/git"
 	"github.com/kzs0/reviewd/internal/policy"
 	"github.com/kzs0/reviewd/internal/storage"
+	"go.yaml.in/yaml/v3"
 )
 
 // configFlags are shared by every command that needs forge configuration.
@@ -29,8 +31,8 @@ type configFlags struct {
 func addConfigFlags(fs *flag.FlagSet) configFlags {
 	return configFlags{
 		forge:  fs.String("forge-config", "", "legacy forge configuration (deprecated; see reviewd config migrate)"),
-		config: fs.String("config", "", "reviewd.json (default $REVIEWD_CONFIG, then ./reviewd.json)"),
-		state:  fs.String("state", "", "state directory (overrides $REVIEWD_STATE and the config file)"),
+		config: fs.String("config", "", "changeharbor.yaml (default $CHANGEHARBOR_CONFIG, then ./changeharbor.yaml)"),
+		state:  fs.String("state", "", "state directory (overrides $CHANGEHARBOR_STATE and the config file)"),
 		fs:     fs,
 	}
 }
@@ -45,14 +47,14 @@ func configPath(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
 	}
-	if env := os.Getenv("REVIEWD_CONFIG"); env != "" {
+	if env := os.Getenv("CHANGEHARBOR_CONFIG"); env != "" {
 		return env
 	}
-	return "reviewd.json"
+	return "changeharbor.yaml"
 }
 
 // selection is the configuration a command runs with: one legacy forge file
-// or a unified reviewd.json with its lock.
+// or a unified changeharbor.yaml with its lock.
 type selection struct {
 	legacy  *forgeConfig
 	unified *unifiedConfig
@@ -175,7 +177,7 @@ func loadUnified(path, stateFlag string, stateSet bool) (unifiedConfig, error) {
 		return unifiedConfig{}, e
 	}
 	u := unifiedConfig{path: path, settings: s, sources: src, lock: lock, state: s.State, stateSource: src["state"]}
-	if env := os.Getenv("REVIEWD_STATE"); env != "" {
+	if env := os.Getenv("CHANGEHARBOR_STATE"); env != "" {
 		u.state, u.stateSource = env, "env"
 	}
 	if stateSet {
@@ -342,7 +344,7 @@ func configCommand(ctx context.Context, args []string) (int, error) {
 		return configCheck(args[1:])
 	case "resolve":
 		f := flag.NewFlagSet("config resolve", flag.ContinueOnError)
-		path := f.String("config", "", "reviewd.json")
+		path := f.String("config", "", "changeharbor.yaml")
 		if f.Parse(args[1:]) != nil || f.NArg() != 0 {
 			return 2, nil
 		}
@@ -361,7 +363,7 @@ func configCommand(ctx context.Context, args []string) (int, error) {
 
 func configCheck(args []string) (int, error) {
 	f := flag.NewFlagSet("config check", flag.ContinueOnError)
-	path := f.String("config", "", "reviewd.json")
+	path := f.String("config", "", "changeharbor.yaml")
 	state := f.String("state", "", "state directory override")
 	if f.Parse(args) != nil || f.NArg() != 0 {
 		return 2, nil
@@ -444,15 +446,21 @@ func resolveLock(ctx context.Context, path string) (config.Lock, error) {
 		}
 		lock.Repositories[name] = entry
 	}
-	return lock, writeJSONFile(config.LockPath(path), lock, true)
+	return lock, writeLock(config.LockPath(path), lock)
 }
 
-func writeJSONFile(path string, v any, replace bool) error {
-	b, e := json.MarshalIndent(v, "", "  ")
-	if e != nil {
+func writeLock(path string, l config.Lock) error {
+	var b strings.Builder
+	if e := config.EncodeLock(&b, l); e != nil {
 		return e
 	}
-	b = append(b, '\n')
+	return writeFile(path, []byte(b.String()), true)
+}
+
+// writeFile replaces atomically, or with replace=false creates exclusively so
+// an existing file is never overwritten, even if it appears mid-write.
+func writeFile(path string, b []byte, replace bool) error {
+	var e error
 	if !replace {
 		// Exclusive create: never overwrite, even if the file appears
 		// between a check and the write.
@@ -492,7 +500,7 @@ func repoNameFromURL(raw string) string {
 
 func configInit(ctx context.Context, args []string) (int, error) {
 	f := flag.NewFlagSet("config init", flag.ContinueOnError)
-	path := f.String("config", "", "config file to write (default $REVIEWD_CONFIG, then ./reviewd.json)")
+	path := f.String("config", "", "config file to write (default $CHANGEHARBOR_CONFIG, then ./changeharbor.yaml)")
 	rawURL := f.String("url", "", "repository web URL")
 	provider := f.String("provider", "", "github or gitlab (self-managed hosts)")
 	apiURL := f.String("api-url", "", "API base override")
@@ -507,20 +515,39 @@ func configInit(ctx context.Context, args []string) (int, error) {
 	if *name == "" {
 		*name = repoNameFromURL(*rawURL)
 	}
-	repo := map[string]any{"url": *rawURL, "token_env": *tokenEnv, "mirror": map[string]any{"path": *mirror}, "policy": *policyPath}
+	ep, e := (config.RepositorySettings{URL: *rawURL, Provider: *provider, APIURL: *apiURL}).Endpoint()
+	if e != nil {
+		return 2, fmt.Errorf("--%w", e)
+	}
+	schemaName := "changeharbor.schema.json"
+	q := strconv.Quote
+	var y strings.Builder
+	fmt.Fprintf(&y, "# yaml-language-server: $schema=%s\n", schemaName)
+	y.WriteString("# ChangeHarbor configuration. Reference: https://kzs0.github.io/ChangeHarbor/configuration/reference/\n")
+	y.WriteString("version: 1\n\n# state: .changeharbor          # state directory, relative to this file\n")
+	y.WriteString("# models:\n#   default: models/review.json  # live model config; repositories use it by default\n\n")
+	fmt.Fprintf(&y, "repositories:\n  %s:\n    url: %s\n", *name, q(*rawURL))
 	if *provider != "" {
-		repo["provider"] = *provider
+		fmt.Fprintf(&y, "    provider: %s\n", *provider)
 	}
 	if *apiURL != "" {
-		repo["api_url"] = *apiURL
+		fmt.Fprintf(&y, "    api_url: %s\n", q(*apiURL))
 	}
-	schemaName := "reviewd.schema.json"
-	doc := map[string]any{"$schema": schemaName, "version": 1, "repositories": map[string]any{*name: repo}}
-	b, _ := json.Marshal(doc)
-	if _, _, e := config.DecodeSettings(strings.NewReader(string(b)), filepath.Dir(p)); e != nil {
+	fmt.Fprintf(&y, "    token_env: %s\n    mirror:\n      path: %s\n", *tokenEnv, q(*mirror))
+	y.WriteString("      # sync: auto                # auto (fetch from origin when configured), none, or a remote name\n")
+	fmt.Fprintf(&y, "    policy: %s\n", q(*policyPath))
+	y.WriteString("    # branch: main                # default: the repository's default branch, pinned in the lock\n")
+	y.WriteString("    publish:\n      # shadow evaluates everything and writes nothing. When ready:\n      #   approvals: submit\n      #   comments: post\n")
+	y.WriteString("      approvals: shadow\n      comments: shadow\n")
+	if ep.Provider == "gitlab" {
+		y.WriteString("    gitlab:\n      # external_config requires ci_config_path to load the pipeline from another project.\n      ci_trust: external_config\n")
+		y.WriteString("      # required_jobs: [test]     # default: the policy's required_checks\n")
+	}
+	doc := []byte(y.String())
+	if _, _, e := config.DecodeSettings(strings.NewReader(string(doc)), filepath.Dir(p)); e != nil {
 		return 2, e
 	}
-	if e := writeJSONFile(p, doc, false); e != nil {
+	if e := writeFile(p, doc, false); e != nil {
 		return 2, e
 	}
 	schemaPath := filepath.Join(filepath.Dir(p), schemaName)
@@ -543,10 +570,10 @@ func configMigrate(args []string) (int, error) {
 	forgePath := f.String("forge-config", "", "legacy forge configuration")
 	serverPath := f.String("server-config", "", "legacy serve configuration")
 	state := f.String("state", "", "state directory to record")
-	output := f.String("output", "reviewd.json", "config file to write")
+	output := f.String("output", "changeharbor.yaml", "config file to write")
 	name := f.String("name", "", "repository name (default: derived from the repository)")
 	if f.Parse(args) != nil || f.NArg() != 0 || *forgePath == "" {
-		return 2, errors.New("usage: reviewd config migrate --forge-config FILE [--server-config FILE] [--state DIR] [--output reviewd.json]")
+		return 2, errors.New("usage: reviewd config migrate --forge-config FILE [--server-config FILE] [--state DIR] [--output changeharbor.yaml]")
 	}
 	c, e := loadForgeConfig(*forgePath)
 	if e != nil {
@@ -599,7 +626,7 @@ func configMigrate(args []string) (int, error) {
 	if c.SourceRepositoryID != c.RepositoryID {
 		warnings = append(warnings, fmt.Sprintf("fork source %s is pinned in the lock; set repositories.%s.fork_source before running config resolve", c.SourceRepositoryID, *name))
 	}
-	doc := map[string]any{"version": 1, "$schema": "reviewd.schema.json", "repositories": map[string]any{*name: repo}}
+	doc := map[string]any{"version": 1, "repositories": map[string]any{*name: repo}}
 	if *state != "" {
 		doc["state"] = *state
 	}
@@ -642,24 +669,29 @@ func configMigrate(args []string) (int, error) {
 	}
 	lock := config.Lock{Version: 1, Repositories: map[string]config.LockedRepository{*name: {Inputs: settings.LockInputs(*name),
 		RepositoryID: c.RepositoryID, SourceRepositoryID: c.SourceRepositoryID, DefaultBranch: c.Branch, BotUserID: c.BotUserID}}}
-	if e = writeJSONFile(*output, doc, false); e != nil {
+	body, e := yaml.Marshal(doc)
+	if e != nil {
+		return 1, e
+	}
+	header := "# yaml-language-server: $schema=changeharbor.schema.json\n# Migrated by reviewd config migrate. Reference: https://kzs0.github.io/ChangeHarbor/configuration/reference/\n"
+	if e = writeFile(*output, append([]byte(header), body...), false); e != nil {
 		return 2, e
 	}
-	if e = writeJSONFile(config.LockPath(*output), lock, true); e != nil {
+	if e = writeLock(config.LockPath(*output), lock); e != nil {
 		return 1, e
 	}
 	return 0, emit(map[string]any{"Config": *output, "Lock": config.LockPath(*output), "Warnings": warnings})
 }
 
-// loadServerConfig reads a serve configuration: a unified reviewd.json (it
+// loadServerConfig reads a serve configuration: a changeharbor.yaml (it
 // has a "version" key) or a legacy service file.
 func loadServerConfig(path string) (serverConfig, error) {
-	var probe map[string]json.RawMessage
+	var probe map[string]any
 	b, e := os.ReadFile(path)
 	if e != nil {
 		return serverConfig{}, e
 	}
-	if json.Unmarshal(b, &probe) == nil {
+	if yaml.Unmarshal(b, &probe) == nil {
 		if _, unified := probe["version"]; unified {
 			return unifiedServerConfig(path)
 		}

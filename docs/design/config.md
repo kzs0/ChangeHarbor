@@ -1,29 +1,37 @@
 # Unified configuration
 
-One reviewed file, `reviewd.json`, replaces per-command forge and service
-files. A sibling lock file, `reviewd.lock.json`, pins identities resolved from
+One reviewed file, `changeharbor.yaml`, replaces per-command forge and service
+files. A sibling lock file, `changeharbor.lock.yaml`, pins identities resolved from
 the forge API. Policies and model configs stay separate files referenced by
 path and name: they are separately digested trust artifacts, and model
 configs are reused across repositories.
 
-```json
-{
-  "version": 1,
-  "$schema": "reviewd.schema.json",
-  "state": "/data/reviewd",
-  "service": { "address": "127.0.0.1:8080", "gitlab_secret_env": "GITLAB_WEBHOOK_SECRET" },
-  "models": { "default": "models/review.json" },
-  "repositories": {
-    "app": {
-      "url": "https://gitlab.com/group/app",
-      "token_env": "GITLAB_TOKEN",
-      "mirror": { "path": "/mirrors/app.git" },
-      "policy": "policies/app.json",
-      "publish": { "approvals": "submit", "comments": "post" }
-    }
-  }
-}
+```yaml
+# changeharbor.yaml
+version: 1
+state: /data/changeharbor
+service:
+  address: 127.0.0.1:8080
+  gitlab_secret_env: GITLAB_WEBHOOK_SECRET
+models:
+  default: models/review.json
+repositories:
+  app:
+    url: https://gitlab.com/group/app
+    token_env: GITLAB_TOKEN
+    mirror:
+      path: /mirrors/app.git
+    policy: policies/app.json
+    publish:
+      approvals: submit
+      comments: post
 ```
+
+The file is YAML so it can carry comments. Parsing is strict: nulls,
+anchors and aliases, merge keys, custom tags, duplicate keys and multiple
+documents are rejected with line numbers. Unquoted numbers in text fields keep
+their exact text (`bot_user_id: 12345`, `branch: 1.10`). JSON is valid YAML and
+still accepted.
 
 ## Principles
 
@@ -47,7 +55,7 @@ configs are reused across repositories.
   | `gitlab.ci_trust` | `external_config`, `unchanged_config`, `none` | `external_config` |
   | `gitlab.required_jobs` | job names | the policy's `required_checks` |
   | `model` | name in `models` | `default` when defined |
-  | `state` | directory | `.reviewd` |
+  | `state` | directory | `.changeharbor` beside the config |
 
 - **Structural review identity.** Only the review identity (provider, bases,
   repository path and IDs, mirror path, policy path, branch) is digested into
@@ -60,15 +68,15 @@ configs are reused across repositories.
   command line supplies the model.
 - **Errors name the path** (`repositories.app.gitlab.ci_trust`) and suggest
   close matches for unknown keys and invalid values.
-- **Environment overrides only locate things:** `REVIEWD_CONFIG` (the config
-  path) and `REVIEWD_STATE`. Trust and publication settings come only from
+- **Environment overrides only locate things:** `CHANGEHARBOR_CONFIG` (the config
+  path) and `CHANGEHARBOR_STATE`. Trust and publication settings come only from
   the reviewed file. Precedence for state is flag, then environment, then
   file, then default.
 
 ## Commands
 
-- `config init --url … --mirror … --policy … --token-env …` writes
-  `reviewd.json` and `reviewd.schema.json`, then resolves the lock. It never
+- `config init --url … --mirror … --policy … --token-env …` writes a
+  commented `changeharbor.yaml` and `changeharbor.schema.json`, then resolves the lock. It never
   overwrites existing files.
 - `config resolve` (re)writes the lock from the forge API.
 - `config check` validates and prints the effective configuration per
@@ -79,7 +87,7 @@ configs are reused across repositories.
   offline (their IDs become the lock).
 
 Every command accepts `--config`. Without it the config path comes from
-`REVIEWD_CONFIG`, then `./reviewd.json`. `review --url` and `publish`/`comment
+`CHANGEHARBOR_CONFIG`, then `./changeharbor.yaml`. `review --url` and `publish`/`comment
 --run` select the repository by URL. Legacy `--forge-config` keeps working for
 one release with a deprecation warning. `serve --config` accepts either
 format.
