@@ -37,7 +37,7 @@ infrastructure; event payload paths never authorize cloning or source execution.
 Missing Git objects produce an error, not a completed review. Live model and forge
 credentials must be supplied by the operator and remain outside repository input.
 
-GitLab submission is supported when live facts establish native approval reset,
+GitLab deployment hardening (CI trust, webhook automation, mirror sync, doctor, approval revalidation, single-writer lock) is described in docs/design/gitlab-deployment.md. GitLab submission is supported when live facts establish native approval reset,
 branch protection, pipeline requirements, trusted head-pipeline provenance and
 bot-completable approval rules (see internal/forge/gitlab/CONTRACT.md); GitLab
 Free lacks the Premium approval endpoints and remains withheld. GitHub

@@ -14,13 +14,14 @@ const (
 )
 
 func goodExpect() Expect {
-	return Expect{ProjectID: "9", IID: 7, Head: head, Target: target, MergeBase: "def", TargetBranch: "main", BotUserID: "5", RequiredJobs: map[string]string{"test": "project:9"}}
+	return Expect{ProjectID: "9", ProjectPath: "group/app", IID: 7, Head: head, Target: target, MergeBase: "def", TargetBranch: "main", BotUserID: "5", RequiredJobs: map[string]string{"test": "project:9"},
+		CITrust: "external_config", ChangedPaths: []string{"src/a.go"}}
 }
 func goodFacts() Facts {
 	return Facts{
 		Change:                Change{RepositoryID: "9", SourceRepositoryID: "9", HeadOID: head, TargetOID: target, MergeBaseOID: "def", TargetBranch: "main", State: "opened", HeadPipelineID: 500},
 		UserID:                "5",
-		Project:               ProjectSettings{PipelineMustSucceed: true, MergeMethod: "ff"},
+		Project:               ProjectSettings{PipelineMustSucceed: true, MergeMethod: "ff", CIConfigPath: ".gitlab-ci.yml@group/ci-config"},
 		ApprovalSettings:      ApprovalSettings{ResetOnPush: true},
 		ApprovalSettingsKnown: true,
 		Branch:                ProtectedBranch{Protected: true},
@@ -162,7 +163,7 @@ func collectRoutes(over map[string]func(http.ResponseWriter, *http.Request)) map
 		"GET /projects/9/merge_requests/7":         body(mrJSON),
 		"GET /projects/9/repository/branches/main": body(`{"name":"main","commit":{"id":"456"}}`),
 		"GET /user":                                       body(`{"id":5}`),
-		"GET /projects/9":                                 body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"merge_method":"ff"}`),
+		"GET /projects/9":                                 body(`{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"merge_method":"ff","ci_config_path":".gitlab-ci.yml@group/ci-config"}`),
 		"GET /projects/9/approvals":                       body(`{"reset_approvals_on_push":true}`),
 		"GET /projects/9/protected_branches/main":         body(`{"name":"main","allow_force_push":false}`),
 		"GET /projects/9/merge_requests/7/approval_state": body(`{"rules":[{"name":"M","rule_type":"regular","approvals_required":1,"approved":false,"eligible_approvers":[{"id":5}],"approved_by":[]}]}`),
