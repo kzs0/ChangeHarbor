@@ -1,14 +1,10 @@
-// Package gitlab records conservative capability availability for GitLab.
-// SHA-bound transport is available, but verified protected CI provenance and
-// complete native approval policy parity are not established; automatic submission
-// remains unsupported until host diagnostics establish those requirements.
+// Package gitlab contains bounded GitLab REST v4 adapters and the native
+// requirement gate used before a revision-bound approval is submitted.
+//
+// Submission is supported only when live platform facts establish every native
+// control the host relies on: approvals reset on push, a protected target that
+// rejects force pushes, pipelines required to succeed with natively enforced
+// target freshness, a trusted head pipeline bound to the reviewed revision, and
+// approval rules that the configured bot can satisfy. Anything unknown —
+// including Premium-only endpoints that are unavailable — withholds approval.
 package gitlab
-
-import "errors"
-
-type Support struct{ RevisionBoundApproval, TrustedChecks bool }
-
-func Capabilities() Support { return Support{} }
-func RequireApprovalCapability() error {
-	return errors.New("GitLab revision-bound approval is unsupported; remain in shadow mode")
-}

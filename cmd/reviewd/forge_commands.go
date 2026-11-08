@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,11 @@ type forgeConfig struct {
 	Branch             string            `json:"branch"`
 	Mode               string            `json:"mode"`
 	RequiredChecks     map[string]string `json:"required_checks"`
+	// GitLab only. BotUserID is the numeric user the token must act as;
+	// TokenScheme is "private-token" (default) or "bearer". Omitted when
+	// empty so existing configuration digests are unchanged.
+	BotUserID   string `json:"bot_user_id,omitempty"`
+	TokenScheme string `json:"token_scheme,omitempty"`
 }
 type forgeCapture struct {
 	Provider, RepositoryID, SourceRepositoryID, Head, Target, URL string
@@ -75,10 +81,58 @@ func loadForgeConfig(path string) (forgeConfig, error) {
 	if c.Provider == "gitlab" && (c.ProjectID == "" || c.Repository == "") {
 		return c, errors.New("GitLab project ID/web path required")
 	}
+	if c.Provider == "github" && (c.BotUserID != "" || c.TokenScheme != "") {
+		return c, errors.New("bot_user_id and token_scheme are GitLab settings")
+	}
+	if c.Provider == "gitlab" {
+		if c.ProjectID != c.RepositoryID {
+			return c, errors.New("GitLab project ID must equal repository ID")
+		}
+		if c.TokenScheme != "" && c.TokenScheme != "private-token" && c.TokenScheme != "bearer" {
+			return c, errors.New("GitLab token_scheme must be private-token or bearer")
+		}
+		if c.BotUserID != "" && !numericID.MatchString(c.BotUserID) {
+			return c, errors.New("GitLab bot_user_id must be a numeric user ID")
+		}
+		if c.Mode == "submit" && c.BotUserID == "" {
+			return c, errors.New("GitLab submit mode requires bot_user_id")
+		}
+		for name, producer := range c.RequiredChecks {
+			if producer != "project:"+c.ProjectID {
+				return c, fmt.Errorf("GitLab required check %q must be produced by project:%s", name, c.ProjectID)
+			}
+		}
+	}
 	if c.SourceRepositoryID == "" {
 		c.SourceRepositoryID = c.RepositoryID
 	}
 	return c, nil
+}
+
+var numericID = regexp.MustCompile(`^[1-9][0-9]*$`)
+
+func gitlabClient(c forgeConfig) *gl.Client {
+	token := os.Getenv(c.TokenEnv)
+	if c.TokenScheme == "bearer" {
+		return gl.NewBearerClient(c.APIBase, token, nil, 1<<20)
+	}
+	return gl.NewClient(c.APIBase, token, nil, 1<<20)
+}
+
+// requireMirrorObjects turns a missing captured commit into an actionable sync
+// error instead of a bare git failure.
+func requireMirrorObjects(ctx context.Context, c forgeConfig, captured forgeCapture) error {
+	r := gitreader.Reader{Repo: c.RepoPath}
+	for _, rev := range []string{captured.Head, captured.Target} {
+		if _, e := r.Resolve(ctx, rev); e != nil {
+			hint := "fetch the PR head and target branch into the mirror"
+			if c.Provider == "gitlab" {
+				hint = "fetch +refs/merge-requests/*/head:refs/merge-requests/*/head and the target branch into the mirror"
+			}
+			return fmt.Errorf("local mirror %s does not contain captured commit %s; %s", c.RepoPath, rev, hint)
+		}
+	}
+	return nil
 }
 func forgeNumber(c forgeConfig, raw string) (int, error) {
 	u, e := url.Parse(raw)
@@ -125,7 +179,7 @@ func captureForge(ctx context.Context, c forgeConfig, raw string) (forgeCapture,
 		}
 		out.RepositoryID, out.SourceRepositoryID, out.Head, out.Target = x.RepositoryID, x.SourceRepositoryID, x.HeadOID, x.TargetOID
 	} else {
-		x, e := gl.NewClient(c.APIBase, token, nil, 1<<20).Change(ctx, c.ProjectID, n)
+		x, e := gitlabClient(c).Change(ctx, c.ProjectID, n)
 		if e != nil {
 			return out, e
 		}
@@ -286,6 +340,9 @@ func forgeReviewCommand(ctx context.Context, args []string) (int, error) {
 	if e != nil {
 		return 1, e
 	}
+	if e = requireMirrorObjects(ctx, c, captured); e != nil {
+		return 1, e
+	}
 	d, e := (gitreader.Reader{Repo: c.RepoPath}).Diff(ctx, captured.Target, captured.Head)
 	if e != nil {
 		return 1, e
@@ -398,17 +455,22 @@ func publishCommand(ctx context.Context, args []string) (int, error) {
 	if pd != p.PolicyDigest {
 		return 4, errors.New("review policy changed")
 	}
-	if c.Provider != "github" {
-		return 4, errors.New("GitLab native approval requirement proof is unsupported; remain in shadow mode")
+	var remote interface {
+		publish.Remote
+		withheldReason() string
 	}
-	remote := &githubPublication{c: c, provenance: p, result: r}
+	if c.Provider == "github" {
+		remote = &githubPublication{c: c, provenance: p, result: r}
+	} else {
+		remote = &gitlabPublication{c: c, provenance: p, result: r}
+	}
 	service := publish.Service{Remote: remote, Audit: s}
 	out, e := service.Publish(ctx, *runID, publish.Request{Mode: "submit", ReviewedHead: p.Capture.Head, ReviewedTarget: p.Capture.Target, PolicyDigest: p.PolicyDigest, Eligible: r.Status == "completed" && r.Package.Complete})
 	if e != nil {
 		return 1, e
 	}
-	if out.State == "withheld" && remote.reason != "" {
-		out.Reason = remote.reason
+	if out.State == "withheld" && out.RemoteID == "" && remote.withheldReason() != "" && !strings.HasPrefix(out.Reason, publish.ErrNotWritten.Error()) {
+		out.Reason = remote.withheldReason()
 	}
 	if e = emit(out); e != nil {
 		return 1, e
@@ -429,6 +491,7 @@ type githubPublication struct {
 func (g *githubPublication) client() *gh.Client {
 	return gh.NewClient(g.c.APIBase, os.Getenv(g.c.TokenEnv), nil, 1<<20)
 }
+func (g *githubPublication) withheldReason() string { return g.reason }
 func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, error) {
 	c, e := captureForge(ctx, g.c, g.provenance.Capture.URL)
 	if e != nil {
@@ -439,25 +502,10 @@ func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, e
 		return publish.Observation{}, e
 	}
 	obs := publish.Observation{Head: c.Head, Target: c.Target, PolicyDigest: pd}
-	if c.Head != g.provenance.Capture.Head || c.Target != g.provenance.Capture.Target {
-		g.reason = "reviewed HEAD or target changed"
-		return obs, nil
-	}
-	d, e := (gitreader.Reader{Repo: g.c.RepoPath}).Diff(ctx, c.Target, c.Head)
-	if e != nil {
+	d, reason, e := localRevisions(ctx, g.c, g.provenance.Capture, c)
+	if e != nil || reason != "" {
+		g.reason = reason
 		return obs, e
-	}
-	if !d.TargetInHead {
-		g.reason = "target is not an ancestor of reviewed HEAD"
-		return obs, nil
-	}
-	branchOID, err := (gitreader.Reader{Repo: g.c.RepoPath}).Resolve(ctx, g.c.Branch)
-	if err != nil {
-		return obs, err
-	}
-	if branchOID != c.Target {
-		g.reason = "configured branch identity differs from live target"
-		return obs, nil
 	}
 	protection, e := g.client().Protection(ctx, g.c.Owner, g.c.Repository, g.c.Branch)
 	if e != nil {
@@ -495,39 +543,123 @@ func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, e
 			return obs, nil
 		}
 	}
-	f, e := os.Open(g.c.PolicyFile)
+	obs.ChecksPass, g.reason, e = hostPolicyAllows(ctx, g.c, g.result, d, passed)
+	return obs, e
+}
+
+// localRevisions verifies the live capture against the reviewed provenance and
+// the local mirror. A non-empty reason withholds approval.
+func localRevisions(ctx context.Context, cfg forgeConfig, reviewed, live forgeCapture) (gitreader.Diff, string, error) {
+	if live.Head != reviewed.Head || live.Target != reviewed.Target {
+		return gitreader.Diff{}, "reviewed HEAD or target changed", nil
+	}
+	if e := requireMirrorObjects(ctx, cfg, live); e != nil {
+		return gitreader.Diff{}, "", e
+	}
+	r := gitreader.Reader{Repo: cfg.RepoPath}
+	d, e := r.Diff(ctx, live.Target, live.Head)
 	if e != nil {
-		return obs, e
+		return d, "", e
+	}
+	if !d.TargetInHead {
+		return d, "target is not an ancestor of reviewed HEAD", nil
+	}
+	branchOID, e := r.Resolve(ctx, cfg.Branch)
+	if e != nil {
+		return d, "", e
+	}
+	if branchOID != live.Target {
+		return d, "configured branch identity differs from live target", nil
+	}
+	return d, "", nil
+}
+
+// hostPolicyAllows re-evaluates the trusted host risk policy against the live
+// diff and the provider-verified checks.
+func hostPolicyAllows(ctx context.Context, cfg forgeConfig, result review.Result, d gitreader.Diff, passed map[string]bool) (bool, string, error) {
+	f, e := os.Open(cfg.PolicyFile)
+	if e != nil {
+		return false, "", e
 	}
 	p, e := policy.Decode(f)
 	f.Close()
 	if e != nil {
-		return obs, e
+		return false, "", e
 	}
-	facts := policy.Facts{ModelRisk: &g.result.Review.ModelMergeRisk, SubmissionEnabled: true, ReviewValid: g.result.Status == "completed", CoverageComplete: g.result.Package.Complete, RevisionsCurrent: true, ChecksPassed: true, NativeRequirementsPassed: true, PolicyTrusted: true, PassedChecks: passed}
+	facts := policy.Facts{ModelRisk: &result.Review.ModelMergeRisk, SubmissionEnabled: true, ReviewValid: result.Status == "completed", CoverageComplete: result.Package.Complete, RevisionsCurrent: true, ChecksPassed: true, NativeRequirementsPassed: true, PolicyTrusted: true, PassedChecks: passed}
 	for _, x := range d.Files {
 		facts.Changes = append(facts.Changes, policy.Change{OldPath: x.OldPath, NewPath: x.NewPath, Added: max(0, x.Additions), Deleted: max(0, x.Deletions), LinesKnown: !x.Binary && x.Additions >= 0 && x.Deletions >= 0})
 	}
-	for _, finding := range g.result.Review.Findings {
+	for _, finding := range result.Review.Findings {
 		if finding.Severity == "critical" || finding.Severity == "high" {
 			facts.BlockingFinding = true
 		}
 	}
-	facts.RequiredEvidenceMissing = len(g.result.Review.UnresolvedQuestions) > 0
+	facts.RequiredEvidenceMissing = len(result.Review.UnresolvedQuestions) > 0
 	decision, e := policy.Evaluate(ctx, p, facts)
 	if e != nil {
-		return obs, e
+		return false, "", e
 	}
-	if decision.EffectiveRisk != nil && max(g.result.Minimum, *decision.EffectiveRisk) > p.AutoApproveMax {
+	if decision.EffectiveRisk != nil && max(result.Minimum, *decision.EffectiveRisk) > p.AutoApproveMax {
 		decision.Eligible = false
 	}
-	_, e = review.Assess(g.result, max(g.result.Minimum, decision.EnforcedMinimum), p.AutoApproveMax, decision.Eligible)
-	obs.ChecksPass = e == nil && decision.Eligible
-	if !obs.ChecksPass {
-		g.reason = "host risk policy or independent requirements withhold approval"
+	_, e = review.Assess(result, max(result.Minimum, decision.EnforcedMinimum), p.AutoApproveMax, decision.Eligible)
+	if e == nil && decision.Eligible {
+		return true, "", nil
 	}
-	return obs, nil
+	return false, "host risk policy or independent requirements withhold approval", nil
 }
 func (g *githubPublication) Approve(ctx context.Context, head string) (string, error) {
 	return g.client().Approve(ctx, g.c.Owner, g.c.Repository, g.provenance.Capture.Number, head)
+}
+
+type gitlabPublication struct {
+	c          forgeConfig
+	provenance forgeProvenance
+	result     review.Result
+	reason     string
+}
+
+func (g *gitlabPublication) withheldReason() string { return g.reason }
+
+// Refresh re-reads the merge request once (via Collect) so the identity,
+// native requirements and pipeline evidence come from one live snapshot.
+func (g *gitlabPublication) Refresh(ctx context.Context) (publish.Observation, error) {
+	pd, e := fileDigest(g.c.PolicyFile)
+	if e != nil {
+		return publish.Observation{}, e
+	}
+	reviewed := g.provenance.Capture
+	expect := gl.Expect{ProjectID: g.c.ProjectID, IID: reviewed.Number, Head: reviewed.Head, Target: reviewed.Target, TargetBranch: g.c.Branch, BotUserID: g.c.BotUserID, RequiredJobs: g.c.RequiredChecks}
+	facts, e := gitlabClient(g.c).Collect(ctx, expect)
+	if e != nil {
+		return publish.Observation{}, e
+	}
+	ch := facts.Change
+	if ch.RepositoryID != g.c.RepositoryID || ch.SourceRepositoryID != g.c.SourceRepositoryID {
+		return publish.Observation{}, errors.New("forge repository identity disagrees with trusted mapping")
+	}
+	live := forgeCapture{Provider: "gitlab", RepositoryID: ch.RepositoryID, SourceRepositoryID: ch.SourceRepositoryID, Head: ch.HeadOID, Target: ch.TargetOID, URL: reviewed.URL, Number: reviewed.Number}
+	obs := publish.Observation{Head: live.Head, Target: live.Target, PolicyDigest: pd}
+	d, reason, e := localRevisions(ctx, g.c, reviewed, live)
+	if e != nil || reason != "" {
+		g.reason = reason
+		return obs, e
+	}
+	expect.MergeBase = d.MergeBase
+	passed, reason := gl.Evaluate(facts, expect)
+	if reason != "" {
+		g.reason = reason
+		return obs, nil
+	}
+	obs.ChecksPass, g.reason, e = hostPolicyAllows(ctx, g.c, g.result, d, passed)
+	return obs, e
+}
+
+func (g *gitlabPublication) Approve(ctx context.Context, head string) (string, error) {
+	id, e := gitlabClient(g.c).Approve(ctx, g.c.ProjectID, g.provenance.Capture.Number, head, g.c.BotUserID)
+	if errors.Is(e, gl.ErrRejected) {
+		return "", fmt.Errorf("%w: %v", publish.ErrNotWritten, e)
+	}
+	return id, e
 }

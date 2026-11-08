@@ -15,10 +15,13 @@ import (
 
 type Client struct {
 	base, token string
+	bearer      bool
 	http        *http.Client
 	max         int64
 }
 
+// NewClient authenticates with a personal, project or group access token sent
+// as PRIVATE-TOKEN. An empty token sends no credential header.
 func NewClient(base, token string, h *http.Client, max int64) *Client {
 	if h == nil {
 		h = &http.Client{Timeout: 30 * time.Second}
@@ -26,10 +29,39 @@ func NewClient(base, token string, h *http.Client, max int64) *Client {
 	if max <= 0 {
 		max = 1 << 20
 	}
-	return &Client{strings.TrimRight(base, "/"), token, h, max}
+	return &Client{base: strings.TrimRight(base, "/"), token: token, http: h, max: max}
 }
 
-type Change struct{ RepositoryID, SourceRepositoryID, HeadOID, TargetOID, MergeBaseOID string }
+// NewBearerClient authenticates with an OAuth2-style Authorization: Bearer
+// header, which GitLab also accepts for personal/project/group access tokens.
+func NewBearerClient(base, token string, h *http.Client, max int64) *Client {
+	c := NewClient(base, token, h, max)
+	c.bearer = true
+	return c
+}
+
+// StatusError reports a non-2xx GitLab response. Callers distinguish definite
+// refusals (4xx) from ambiguous outcomes (5xx, transport errors).
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("GitLab status %d", e.Code) }
+
+func statusCode(e error) int {
+	var se *StatusError
+	if errors.As(e, &se) {
+		return se.Code
+	}
+	return 0
+}
+
+// Change is the live merge request identity. TargetOID is the live target
+// branch tip, not the possibly stale diff start.
+type Change struct {
+	RepositoryID, SourceRepositoryID, HeadOID, TargetOID, MergeBaseOID string
+	TargetBranch, State                                                string
+	Draft                                                              bool
+	HeadPipelineID                                                     int64
+}
 
 func (c *Client) request(ctx context.Context, method, path string, body io.Reader, out any) error {
 	u, e := url.Parse(c.base)
@@ -40,8 +72,17 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 	if e != nil {
 		return e
 	}
-	req.Header.Set("PRIVATE-TOKEN", c.token)
-	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		if c.bearer {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		} else {
+			req.Header.Set("PRIVATE-TOKEN", c.token)
+		}
+	}
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	hc := *c.http
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	if hc.Timeout <= 0 {
@@ -53,7 +94,7 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("GitLab status %d", res.StatusCode)
+		return &StatusError{Code: res.StatusCode}
 	}
 	b, e := io.ReadAll(io.LimitReader(res.Body, c.max+1))
 	if e != nil {
@@ -88,7 +129,13 @@ func (c *Client) Change(ctx context.Context, id string, number int) (Change, err
 		TargetProjectID int64  `json:"target_project_id"`
 		SHA             string `json:"sha"`
 		TargetBranch    string `json:"target_branch"`
-		DiffRefs        struct {
+		State           string `json:"state"`
+		Draft           bool   `json:"draft"`
+		WIP             bool   `json:"work_in_progress"`
+		HeadPipeline    *struct {
+			ID int64 `json:"id"`
+		} `json:"head_pipeline"`
+		DiffRefs struct {
 			HeadSHA  string `json:"head_sha"`
 			BaseSHA  string `json:"base_sha"`
 			StartSHA string `json:"start_sha"`
@@ -122,11 +169,13 @@ func (c *Client) Change(ctx context.Context, id string, number int) (Change, err
 	if branch.Name != wire.TargetBranch || !oid.MatchString(branch.Commit.ID) {
 		return Change{}, errors.New("unverified target branch revision")
 	}
-	return Change{fmt.Sprint(x.TargetProjectID), fmt.Sprint(x.SourceProjectID), x.SHA, branch.Commit.ID, x.DiffRefs.BaseSHA}, nil
-}
-
-type Check struct{ Name, Producer, OID, Conclusion string }
-
-func TrustedCheck(c Check, producer, revision string) bool {
-	return producer != "" && revision != "" && c.Producer == producer && c.OID == revision && c.Conclusion == "success"
+	out := Change{RepositoryID: fmt.Sprint(x.TargetProjectID), SourceRepositoryID: fmt.Sprint(x.SourceProjectID), HeadOID: x.SHA, TargetOID: branch.Commit.ID, MergeBaseOID: x.DiffRefs.BaseSHA,
+		TargetBranch: wire.TargetBranch, State: wire.State, Draft: wire.Draft || wire.WIP}
+	if wire.HeadPipeline != nil {
+		if wire.HeadPipeline.ID <= 0 {
+			return Change{}, errors.New("invalid head pipeline identity")
+		}
+		out.HeadPipelineID = wire.HeadPipeline.ID
+	}
+	return out, nil
 }

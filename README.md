@@ -66,6 +66,25 @@ contain the captured commits. The default publish mode is shadow. Submission
 requires supported live protection/check facts and matching saved provenance;
 unknown native/human requirements withhold approval. No auto-merge occurs.
 
+### GitLab submission
+
+GitLab forge configuration uses `project_id` (equal to `repository_id`),
+`repository` (the web path, e.g. `group/app`), `bot_user_id` (numeric user the
+token acts as; required for `submit`), optional `token_scheme`
+(`private-token` default, or `bearer`) and `required_checks` mapping job names
+to `project:<project_id>`. Mirrors must fetch
+`+refs/merge-requests/*/head:refs/merge-requests/*/head` and the target branch.
+
+Approval is submitted only when live GitLab facts establish: MR open, not draft
+and targeting the configured branch; pipelines must succeed with fast-forward,
+semi-linear or merged results pipelines; approvals reset on push; protected
+target without force push; approval rules completable by the bot; and a
+successful head pipeline in the target project, bound to the reviewed head (or
+a merged-results commit of exactly the live target and head), containing every
+required job. Premium approval endpoints are required: on GitLab Free the run is
+withheld. Definite provider refusals are audited as withheld and may be retried;
+ambiguous outcomes stay pending for reconciliation.
+
 ## Release assessment
 
 ```sh

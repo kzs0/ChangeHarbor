@@ -21,6 +21,12 @@ func TestConfigExplicitOfflineDefaults(t *testing.T) {
 	if cfg.Service != "reviewd" || !cfg.LogCanonical || cfg.LogFormat != "json" || cfg.ShutdownTimeout <= 0 || cfg.ShutdownTimeout > 5*time.Second {
 		t.Fatal("missing explicit safe service configuration")
 	}
+	if !cfg.DisableEnvironmentDetection || cfg.ServerProfileHandler != nil || cfg.Profiles != nil {
+		t.Fatalf("metadata probing or profile export enabled: detect=%v handler=%v profiles=%v", !cfg.DisableEnvironmentDetection, cfg.ServerProfileHandler != nil, cfg.Profiles != nil)
+	}
+	if cfg.MetricFamilyLimit <= 0 || cfg.MetricSeriesLimit <= 0 {
+		t.Fatal("metric cardinality limits must be explicit")
+	}
 }
 
 func TestOperationsDeclaredAndDefensive(t *testing.T) {

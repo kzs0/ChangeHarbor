@@ -18,7 +18,8 @@ var providers = []string{"local", "github", "gitlab", "model", "unknown"}
 var reasons = []string{"none", "complete", "human_required", "invalid_output", "incomplete_input", "provider_error", "storage_error", "stale_revision"}
 
 // Config deliberately does not read environment variables. CLI and tests never
-// open listeners or export traces, even when ambient Bedrock defaults request it.
+// open listeners, export traces, or probe cloud metadata endpoints, even when
+// ambient Bedrock defaults request it.
 func Config(output io.Writer) bedrock.Config {
 	if output == nil {
 		output = io.Discard
@@ -29,6 +30,10 @@ func Config(output io.Writer) bedrock.Config {
 		ServerEnabled: false, ServerAddr: "127.0.0.1:9090", ServerMetrics: false,
 		ServerPprof: false, RuntimeMetrics: false, TraceURL: "", TraceSampleRate: 0,
 		ShutdownTimeout: 3 * time.Second,
+		// Bedrock otherwise probes AWS/GCP instance metadata over the network
+		// during Init; one-shot commands and tests must stay offline.
+		DisableEnvironmentDetection: true,
+		MetricFamilyLimit:           64, MetricSeriesLimit: 256,
 	}
 }
 
