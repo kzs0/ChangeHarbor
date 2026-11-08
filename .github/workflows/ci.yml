@@ -12,17 +12,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-      - uses: taiki-e/install-action@v2
+      # just is downloaded from GitHub releases. A download outage must not
+      # use up the job: give it its own short timeout and fall back below.
+      - name: Install just
+        id: just
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: taiki-e/install-action@v2
         with:
           tool: just@1.59.0
       - name: Validate and build
         env:
           CGO_ENABLED: '1'
-        run: just check build
+          JUST_OK: ${{ steps.just.outcome == 'success' }}
+        run: |
+          if [ "$JUST_OK" = true ] && command -v just >/dev/null; then
+            just check build
+          else
+            # Keep in sync with the justfile's check and build recipes.
+            echo "::warning title=just unavailable::Installing just failed; running the justfile's commands directly."
+            go vet ./...
+            go test -race ./...
+            go build -o bin/reviewd ./cmd/reviewd
+          fi
       - name: Replay offline invariants
         run: ./bin/reviewd evaluate --fixtures testdata/evaluation.json
