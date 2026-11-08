@@ -263,3 +263,42 @@ func (c *Client) UpdateComment(ctx context.Context, owner, repo, id, body string
 	}
 	return x.comment()
 }
+
+// Repository is a repository's identity looked up by owner and name.
+type Repository struct {
+	ID, DefaultBranch string
+}
+
+func (c *Client) Repository(ctx context.Context, owner, repo string) (Repository, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return Repository{}, e
+	}
+	var x struct {
+		ID            int64  `json:"id"`
+		DefaultBranch string `json:"default_branch"`
+		FullName      string `json:"full_name"`
+	}
+	if e = c.request(ctx, "GET", p, nil, &x); e != nil {
+		return Repository{}, e
+	}
+	if x.ID <= 0 || x.DefaultBranch == "" || !strings.EqualFold(x.FullName, owner+"/"+repo) {
+		return Repository{}, errors.New("repository identity mismatch")
+	}
+	return Repository{ID: fmt.Sprint(x.ID), DefaultBranch: x.DefaultBranch}, nil
+}
+
+// CurrentUser returns the token's user ID. GitHub App installation tokens
+// cannot call this endpoint.
+func (c *Client) CurrentUser(ctx context.Context) (string, error) {
+	var x struct {
+		ID int64 `json:"id"`
+	}
+	if e := c.request(ctx, "GET", "/user", nil, &x); e != nil {
+		return "", e
+	}
+	if x.ID <= 0 {
+		return "", errors.New("missing GitHub user identity")
+	}
+	return fmt.Sprint(x.ID), nil
+}

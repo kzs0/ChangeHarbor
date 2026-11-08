@@ -224,8 +224,8 @@ func extraCommand(ctx context.Context, args []string) (int, error) {
 		if f.Parse(args[1:]) != nil || *config == "" {
 			return 2, nil
 		}
-		var c serverConfig
-		if e := readJSON(*config, &c); e != nil {
+		c, e := loadServerConfig(*config)
+		if e != nil {
 			return 2, e
 		}
 		if e := c.validate(); e != nil {
@@ -247,6 +247,8 @@ type repositoryConfig struct {
 	// ForgeConfig enables the full forge flow for MR/PR events: API-captured
 	// review, then comment and approval per that configuration's modes.
 	ForgeConfig string `json:"forge_config"`
+
+	forge *forgeConfig // compiled from reviewd.json
 }
 type serverConfig struct {
 	ContextRebuildInterval string                      `json:"context_rebuild_interval"`
@@ -512,8 +514,8 @@ func processEvent(ctx context.Context, c serverConfig, j jobs.Job, b []byte) err
 	if event.Branch != o.Branch {
 		return errors.New("event targets an unconfigured branch")
 	}
-	var forge *forgeConfig
-	if o.ForgeConfig != "" {
+	forge := o.forge
+	if forge == nil && o.ForgeConfig != "" {
 		fc, e := loadForgeConfig(o.ForgeConfig)
 		if e != nil {
 			return e

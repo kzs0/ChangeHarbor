@@ -400,3 +400,30 @@ func (c *Client) ApprovedBy(ctx context.Context, projectID string, number int, u
 	}
 	return x.has(userID), nil
 }
+
+// Project is a project's identity looked up by its full path.
+type Project struct {
+	ID, DefaultBranch, Path string
+}
+
+// ProjectByPath resolves a project path (group/sub/project) to its ID and
+// default branch. The returned path must match the requested one.
+func (c *Client) ProjectByPath(ctx context.Context, path string) (Project, error) {
+	for _, part := range strings.Split(path, "/") {
+		if part == "" || part == "." || part == ".." || part == "-" || strings.ContainsAny(part, "\x00\r\n?#%") {
+			return Project{}, errors.New("invalid project path")
+		}
+	}
+	var x struct {
+		ID            int64  `json:"id"`
+		DefaultBranch string `json:"default_branch"`
+		Path          string `json:"path_with_namespace"`
+	}
+	if e := c.request(ctx, "GET", "/projects/"+url.PathEscape(path), nil, &x); e != nil {
+		return Project{}, e
+	}
+	if x.ID <= 0 || x.DefaultBranch == "" || !strings.EqualFold(x.Path, path) {
+		return Project{}, errors.New("project identity mismatch")
+	}
+	return Project{ID: fmt.Sprint(x.ID), DefaultBranch: x.DefaultBranch, Path: x.Path}, nil
+}
