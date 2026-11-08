@@ -1,0 +1,82 @@
+site_name: ChangeHarbor
+site_description: Self-hosted code review that explains itself and only approves what it can prove.
+site_url: https://kzs0.github.io/ChangeHarbor/
+repo_url: https://github.com/kzs0/ChangeHarbor
+repo_name: kzs0/ChangeHarbor
+edit_uri: edit/main/website/docs/
+docs_dir: docs
+strict: true
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.footer
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - How it works: getting-started/how-it-works.md
+      - Install: getting-started/install.md
+      - Quickstart: getting-started/quickstart.md
+  - Set up:
+      - GitLab: guides/gitlab.md
+      - GitHub: guides/github.md
+      - Run the service: guides/service.md
+  - Configuration:
+      - changeharbor.yaml reference: configuration/reference.md
+      - Risk policy: configuration/policy.md
+      - Models: configuration/models.md
+  - Operations:
+      - Troubleshooting: operations/troubleshooting.md
+      - Security model: operations/security.md
+  - Reference:
+      - CLI: reference/cli.md
+      - Migrating from JSON configs: reference/migrating.md
