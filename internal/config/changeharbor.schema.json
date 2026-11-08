@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "reviewd configuration",
+  "title": "ChangeHarbor configuration (changeharbor.yaml)",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,7 +18,7 @@
     },
     "state": {
       "type": "string",
-      "description": "State directory. Default .reviewd. Overridden by REVIEWD_STATE or --state."
+      "description": "State directory. Default .changeharbor next to this file. Overridden by CHANGEHARBOR_STATE or --state."
     },
     "service": {
       "type": "object",

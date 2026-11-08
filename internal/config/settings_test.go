@@ -22,7 +22,7 @@ func TestMinimalSettingsGetSafeDefaults(t *testing.T) {
 		t.Fatal(e)
 	}
 	r := s.Repositories["app"]
-	if s.State != "/base/.reviewd" || r.Provider != "gitlab" || r.Publish.Approvals != "shadow" || r.Publish.Comments != "shadow" ||
+	if s.State != "/base/.changeharbor" || r.Provider != "gitlab" || r.Publish.Approvals != "shadow" || r.Publish.Comments != "shadow" ||
 		r.Mirror.Sync != "auto" || r.TokenScheme != "private-token" || r.GitLab.CITrust != "external_config" {
 		t.Fatalf("%+v %+v", s, r)
 	}
@@ -113,7 +113,7 @@ func TestModelDefaultsToNamedDefault(t *testing.T) {
 
 func TestRelativePathsResolveAgainstConfigDirectory(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "reviewd.json")
+	path := filepath.Join(dir, "changeharbor.yaml")
 	os.WriteFile(path, []byte(`{"version":1,"state":"state","models":{"default":"m.json"},"repositories":{"app":{"url":"https://gitlab.com/g/app","token_env":"T","mirror":{"path":"mirror"},"policy":"p.json","summary":{"model":"default","limits":{}}}}}`), 0600)
 	s, _, e := LoadSettings(path)
 	if e != nil {
@@ -166,8 +166,10 @@ func TestLockStalenessAndStrictness(t *testing.T) {
 	if _, e := DecodeLock(strings.NewReader(`{"version":1,"repositories":{},"extra":1}`)); e == nil {
 		t.Fatal("unknown lock key accepted")
 	}
-	if LockPath("/x/reviewd.json") != "/x/reviewd.lock.json" || LockPath("/x/cfg") != "/x/cfg.lock.json" {
-		t.Fatal(LockPath("/x/reviewd.json"))
+	for in, want := range map[string]string{"/x/changeharbor.yaml": "/x/changeharbor.lock.yaml", "/x/c.yml": "/x/c.lock.yaml", "/x/old.json": "/x/old.lock.yaml", "/x/cfg": "/x/cfg.lock.yaml"} {
+		if LockPath(in) != want {
+			t.Fatalf("LockPath(%s)=%s want %s", in, LockPath(in), want)
+		}
 	}
 }
 

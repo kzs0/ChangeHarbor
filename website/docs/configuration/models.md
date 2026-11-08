@@ -1,0 +1,65 @@
+# Models
+
+A model config is a strict JSON file. Name it under `models` in
+`changeharbor.yaml` and repositories use `default` automatically:
+
+```yaml
+# changeharbor.yaml
+version: 1
+models:
+  default: models/review.json
+  large: models/review-large.json
+repositories:
+  app:
+    url: https://gitlab.com/group/app
+    token_env: GITLAB_TOKEN
+    mirror:
+      path: /srv/mirrors/app.git
+    policy: policies/app.json
+    model: large           # overrides default for this repository
+```
+
+## Model config file
+
+ChangeHarbor calls an OpenAI-compatible chat completions endpoint with a JSON
+schema response format. It makes one request per review, with no tools.
+
+<!-- example: model -->
+```json
+{
+  "endpoint": "https://models.example.com/v1/chat/completions",
+  "model": "review-model",
+  "api_key_env": "MODEL_API_KEY",
+  "capabilities": {
+    "context_tokens": 272000,
+    "max_output_tokens": 16000,
+    "input_tokens_per_byte": 1,
+    "structured_output": true
+  },
+  "limits": {
+    "max_request_bytes": 1048576,
+    "max_response_bytes": 262144,
+    "max_output_tokens": 16000,
+    "max_attempts": 2,
+    "timeout": 180000000000,
+    "max_total_tokens": 300000
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `endpoint` | HTTPS URL of the chat completions endpoint. |
+| `model` | Model name sent with each request. |
+| `api_key_env` | Environment variable holding the API key. |
+| `capabilities` | What the model supports. `input_tokens_per_byte` is a conservative estimate used for budgeting. Optional `pricing_known` and `input_price_micros_per_million`/`output_price_micros_per_million` enable cost tracking. |
+| `limits` | Hard caps per run. `timeout` is in **nanoseconds** (180000000000 = 3 minutes). `max_attempts` counts transport retries of the same request. Optional `max_cost_micros` caps spend when pricing is known. |
+
+Every request, attempt and response is recorded in the state directory. If a
+response is lost, ChangeHarbor never silently replays the request.
+
+## Trying without a model
+
+Set `response: path/to/response.json` on a repository instead of `model`, or
+pass `--response`. ChangeHarbor then uses that saved response, which is useful
+for trying the flow and in tests. It isn't a real review.

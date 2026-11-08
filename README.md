@@ -54,8 +54,10 @@ unknown. See [HTTP contract](internal/model/CONTRACT.md).
 
 ### Configuration
 
-One reviewed file, `reviewd.json`, configures every repository, and a
-committed `reviewd.lock.json` pins identities resolved from the forge API
+Full documentation: https://kzs0.github.io/ChangeHarbor/
+
+One reviewed file, `changeharbor.yaml`, configures every repository, and a
+committed `changeharbor.lock.yaml` pins identities resolved from the forge API
 (design: [docs/design/config.md](docs/design/config.md)).
 
 ```sh
@@ -65,22 +67,22 @@ bin/reviewd config check          # effective values, where each came from
 bin/reviewd doctor                # live GitLab preflight
 ```
 
-```json
-{
-  "version": 1,
-  "$schema": "reviewd.schema.json",
-  "state": "/data/reviewd",
-  "models": { "default": "models/review.json" },
-  "repositories": {
-    "app": {
-      "url": "https://gitlab.com/group/app",
-      "token_env": "GITLAB_TOKEN",
-      "mirror": { "path": "/mirrors/app.git" },
-      "policy": "policies/app.json",
-      "publish": { "approvals": "submit", "comments": "post" }
-    }
-  }
-}
+```yaml
+# changeharbor.yaml
+version: 1
+state: /data/changeharbor
+models:
+  default: models/review.json
+repositories:
+  app:
+    url: https://gitlab.com/group/app
+    token_env: GITLAB_TOKEN
+    mirror:
+      path: /mirrors/app.git
+    policy: policies/app.json
+    publish:
+      approvals: submit
+      comments: post
 ```
 
 - Provider, web/API bases and path come from `url`. Project ID, default
@@ -94,8 +96,8 @@ bin/reviewd doctor                # live GitLab preflight
   `branch` from the lock. Empty strings are errors. `off` disables a feature
   entirely.
 - Relative paths resolve against the config file. `--config`, then
-  `$REVIEWD_CONFIG`, then `./reviewd.json` locates it; `--state`, then
-  `$REVIEWD_STATE`, then the file sets the state directory. Nothing else is
+  `$CHANGEHARBOR_CONFIG`, then `./changeharbor.yaml` locates it; `--state`, then
+  `$CHANGEHARBOR_STATE`, then the file sets the state directory. Nothing else is
   read from the environment except named secrets.
 - Only review identity (url, provider, api_url, fork_source, mirror path,
   policy, branch) invalidates existing reviews; `config check` lists it.
@@ -109,7 +111,7 @@ bin/reviewd doctor                # live GitLab preflight
 bin/reviewd review --url https://gitlab.com/group/app/-/merge_requests/123
 bin/reviewd publish --run RUN_ID
 bin/reviewd comment --run RUN_ID
-bin/reviewd serve --config reviewd.json   # needs a "service" section
+bin/reviewd serve --config changeharbor.yaml   # needs a "service" section
 ```
 
 Local mirrors must contain the captured commits (or set `mirror.sync`).

@@ -58,7 +58,7 @@ type forgeConfig struct {
 	CIPaths    []string `json:"ci_paths,omitempty"`
 	SyncRemote string   `json:"sync_remote,omitempty"`
 
-	// Set only when compiled from reviewd.json.
+	// Set only when compiled from changeharbor.yaml.
 	name, response, modelConfig string
 }
 
@@ -1006,7 +1006,7 @@ type revalidationResult struct {
 func revalidateCommand(ctx context.Context, args []string) (int, error) {
 	f := flag.NewFlagSet("revalidate", flag.ContinueOnError)
 	cf := addConfigFlags(f)
-	repo := f.String("repo", "", "repository name in reviewd.json (default: every GitLab repository)")
+	repo := f.String("repo", "", "repository name in changeharbor.yaml (default: every GitLab repository)")
 	if f.Parse(args) != nil || f.NArg() != 0 {
 		return 2, nil
 	}
@@ -1115,7 +1115,7 @@ type doctorReport struct {
 func doctorCommand(ctx context.Context, args []string) (int, error) {
 	f := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	cf := addConfigFlags(f)
-	repo := f.String("repo", "", "repository name in reviewd.json (default: every GitLab repository)")
+	repo := f.String("repo", "", "repository name in changeharbor.yaml (default: every GitLab repository)")
 	if f.Parse(args) != nil || f.NArg() != 0 {
 		return 2, nil
 	}

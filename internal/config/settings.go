@@ -17,7 +17,7 @@ import (
 	"strings"
 )
 
-// Settings is the unified reviewd.json. Policies and model configs remain
+// Settings is changeharbor.yaml. Policies and model configs remain
 // separate files referenced by path. See docs/design/config.md.
 type Settings struct {
 	Version      int                           `json:"version"`
@@ -119,6 +119,9 @@ func DecodeSettings(r io.Reader, baseDir string) (Settings, Sources, error) {
 	if len(raw) > 1<<20 {
 		return s, nil, errors.New("config: exceeds 1 MiB")
 	}
+	if raw, e = yamlToJSON(raw, reflect.TypeOf(s)); e != nil {
+		return s, nil, fmt.Errorf("config: %w", e)
+	}
 	if e = validateJSON(raw); e != nil {
 		return s, nil, fmt.Errorf("config: %w", e)
 	}
@@ -165,7 +168,7 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 	}
 	src["state"] = "file"
 	if s.State == "" {
-		s.State, src["state"] = ".reviewd", "default"
+		s.State, src["state"] = ".changeharbor", "default"
 	}
 	s.State = abs(base, s.State)
 	if s.Service != nil {
@@ -452,8 +455,15 @@ func (l Lock) Check(s Settings) error {
 	return nil
 }
 
+// LockPath is the lock file beside a config: changeharbor.yaml ->
+// changeharbor.lock.yaml.
 func LockPath(configPath string) string {
-	return strings.TrimSuffix(configPath, ".json") + ".lock.json"
+	for _, ext := range []string{".yaml", ".yml", ".json"} {
+		if strings.HasSuffix(configPath, ext) {
+			return strings.TrimSuffix(configPath, ext) + ".lock.yaml"
+		}
+	}
+	return configPath + ".lock.yaml"
 }
 
 func DecodeLock(r io.Reader) (Lock, error) {
@@ -462,7 +472,7 @@ func DecodeLock(r io.Reader) (Lock, error) {
 	if e != nil {
 		return l, e
 	}
-	if e = validateJSON(raw); e != nil {
+	if raw, e = yamlToJSON(raw, reflect.TypeOf(l)); e != nil {
 		return l, fmt.Errorf("lock: %w", e)
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
@@ -488,10 +498,10 @@ func LoadLock(path string) (Lock, error) {
 	return DecodeLock(f)
 }
 
-//go:embed reviewd.schema.json
+//go:embed changeharbor.schema.json
 var schema []byte
 
-// Schema returns the JSON Schema for reviewd.json.
+// Schema returns the JSON Schema for changeharbor.yaml.
 func Schema() []byte { return slices.Clone(schema) }
 
 var rawMessage = reflect.TypeOf(json.RawMessage{})
@@ -558,7 +568,7 @@ func checkTree(path string, t reflect.Type, v any) error {
 	case reflect.Slice:
 		xs, ok := v.([]any)
 		if !ok {
-			return fmt.Errorf("%s: must be an array", at())
+			return fmt.Errorf("%s: must be a list", at())
 		}
 		for i, x := range xs {
 			if e := checkTree(fmt.Sprintf("%s[%d]", at(), i), t.Elem(), x); e != nil {
@@ -568,7 +578,7 @@ func checkTree(path string, t reflect.Type, v any) error {
 	case reflect.String:
 		s, ok := v.(string)
 		if !ok {
-			return fmt.Errorf("%s: must be a string", at())
+			return fmt.Errorf("%s: must be text", at())
 		}
 		if s == "" {
 			return fmt.Errorf("%s: empty value; omit the key to use the default", at())

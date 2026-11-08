@@ -248,7 +248,7 @@ type repositoryConfig struct {
 	// review, then comment and approval per that configuration's modes.
 	ForgeConfig string `json:"forge_config"`
 
-	forge *forgeConfig // compiled from reviewd.json
+	forge *forgeConfig // compiled from changeharbor.yaml
 }
 type serverConfig struct {
 	ContextRebuildInterval string                      `json:"context_rebuild_interval"`
