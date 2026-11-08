@@ -44,16 +44,21 @@ type fakeGitLab struct {
 	approveBody   string
 	approvalsBody string
 
-	approveSHAs []string
-	extra       func(http.ResponseWriter, *http.Request) bool // optional additional routes
-	writes      []string
-	requests    int
-	auth        []string
+	approveSHAs  []string
+	unapproves   int
+	tokenSelf    string
+	member       string
+	memberCode   int
+	projectRules string
+	extra        func(http.ResponseWriter, *http.Request) bool // optional additional routes
+	writes       []string
+	requests     int
+	auth         []string
 }
 
 func newFakeGitLab(t *testing.T, head, target string) *fakeGitLab {
 	return &fakeGitLab{t: t, head: head, target: target, mergeBase: target, targetBranch: "main", state: "opened", sourceProject: 9, pipelineID: 500, userID: 5,
-		project:          `{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"allow_merge_on_skipped_pipeline":false,"merge_method":"ff","merge_pipelines_enabled":false,"merge_trains_enabled":false}`,
+		project:          `{"id":9,"only_allow_merge_if_pipeline_succeeds":true,"allow_merge_on_skipped_pipeline":false,"merge_method":"ff","merge_pipelines_enabled":false,"merge_trains_enabled":false,"ci_config_path":".gitlab-ci.yml@group/ci-config"}`,
 		approvalSettings: `{"reset_approvals_on_push":true,"selective_code_owner_removals":false}`,
 		protected:        `{"name":"main","allow_force_push":false,"code_owner_approval_required":false}`,
 		rules:            `{"approval_rules_overwritten":false,"rules":[{"id":1,"name":"Maintainers","rule_type":"regular","approvals_required":1,"approved":false,"eligible_approvers":[{"id":5},{"id":6}],"approved_by":[]}]}`,
@@ -62,6 +67,9 @@ func newFakeGitLab(t *testing.T, head, target string) *fakeGitLab {
 		approveCode:      201,
 		approveBody:      `{"id":88,"iid":7,"approved":true,"approvals_left":0,"approved_by":[{"user":{"id":5}}]}`,
 		approvalsBody:    `{"user_has_approved":true,"approved_by":[{"user":{"id":5}}]}`,
+		tokenSelf:        `{"id":1,"active":true,"revoked":false,"scopes":["api"],"expires_at":"2099-01-01"}`,
+		member:           `{"id":5,"access_level":30}`,
+		projectRules:     `[{"id":1,"name":"Maintainers","rule_type":"regular","approvals_required":1,"eligible_approvers":[{"id":5},{"id":6}]}]`,
 	}
 }
 
@@ -122,6 +130,16 @@ func (f *fakeGitLab) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(f.approveCode, f.approveBody)
 	case r.Method == "GET" && path == "/projects/9/merge_requests/7/approvals":
 		reply(200, f.approvalsBody)
+	case r.Method == "POST" && path == "/projects/9/merge_requests/7/unapprove":
+		f.unapproves++
+		f.approvalsBody = `{"user_has_approved":false,"approved_by":[]}`
+		reply(201, `{}`)
+	case r.Method == "GET" && path == "/personal_access_tokens/self":
+		reply(200, f.tokenSelf)
+	case r.Method == "GET" && path == "/projects/9/members/all/5":
+		reply(max(200, f.memberCode), f.member)
+	case r.Method == "GET" && path == "/projects/9/approval_rules":
+		reply(200, f.projectRules)
 	default:
 		f.t.Errorf("unexpected GitLab request %s %s", r.Method, path)
 		reply(404, `{"message":"404 Not found"}`)
@@ -170,7 +188,7 @@ func newGitLabFixture(t *testing.T) *gitlabFixture {
 	x.config = filepath.Join(x.dir, "forge.json")
 	x.state = filepath.Join(x.dir, "state")
 	t.Setenv("GL_TOKEN", "glpat-fixture")
-	x.cfg = forgeConfig{Provider: "gitlab", WebBase: "https://gitlab.example", APIBase: x.srv.URL, ProjectID: "9", Repository: "group/app", RepositoryID: "9", RepoPath: x.repo, TokenEnv: "GL_TOKEN", PolicyFile: x.policy, Branch: "main", Mode: "submit", BotUserID: "5", RequiredChecks: map[string]string{"test": "project:9"}}
+	x.cfg = forgeConfig{Provider: "gitlab", WebBase: "https://gitlab.example", APIBase: x.srv.URL, ProjectID: "9", Repository: "group/app", RepositoryID: "9", RepoPath: x.repo, TokenEnv: "GL_TOKEN", PolicyFile: x.policy, Branch: "main", Mode: "submit", BotUserID: "5", RequiredChecks: map[string]string{"test": "project:9"}, CITrust: "external_config"}
 	x.writeConfig()
 	return x
 }
