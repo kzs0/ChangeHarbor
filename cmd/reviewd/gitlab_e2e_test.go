@@ -431,7 +431,7 @@ func TestGitLabE2EDefiniteRejectionIsRetryable(t *testing.T) {
 	if p := decode(t, out); code != 4 || p.State != "withheld" || !strings.Contains(p.Reason, "rejected") {
 		t.Fatalf("rejection exit %d %+v %s", code, p, stderr)
 	}
-	x.fake.approveCode = 201
+	x.fake.approveCode, x.fake.approveBody = 201, `{"id":88,"approved":true,"approved_by":[{"user":{"id":5}}]}`
 	code, out, stderr = x.publish(run)
 	if code != 0 || decode(t, out).State != "published" || len(x.fake.approveSHAs) != 2 {
 		t.Fatalf("retry exit %d %s %s", code, out, stderr)

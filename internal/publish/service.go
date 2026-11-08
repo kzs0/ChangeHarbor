@@ -8,6 +8,12 @@ import (
 	"sync"
 )
 
+// ErrNotWritten marks a provider response that definitively refused the write
+// (for example a revision conflict or missing permission). Unlike transport or
+// server failures it cannot have applied, so the attempt is audited as withheld
+// and a later attempt may re-evaluate it.
+var ErrNotWritten = errors.New("provider rejected approval")
+
 type Remote interface {
 	Refresh(context.Context) (Observation, error)
 	Approve(context.Context, string) (string, error)
@@ -55,7 +61,9 @@ func (s *Service) Publish(ctx context.Context, id string, r Request) (Publicatio
 		if old.State == "published" {
 			return old, nil
 		}
-		return old, errors.New("prior write requires reconciliation")
+		if old.State != "withheld" {
+			return old, errors.New("prior write requires reconciliation")
+		}
 	} else if !errors.Is(e, sql.ErrNoRows) {
 		return Publication{}, e
 	}
@@ -75,13 +83,24 @@ func (s *Service) Publish(ctx context.Context, id string, r Request) (Publicatio
 	b, _ := json.Marshal(p)
 	if _, e = s.Audit.Update(ctx, "publication", id, func(old []byte, exists bool) ([]byte, error) {
 		if exists {
-			return nil, errors.New("publication intent already exists; reconcile")
+			var prior Publication
+			if json.Unmarshal(old, &prior) != nil || prior.State != "withheld" {
+				return nil, errors.New("publication intent already exists; reconcile")
+			}
 		}
 		return b, nil
 	}); e != nil {
 		return Publication{}, e
 	}
 	remote, e := s.Remote.Approve(ctx, r.ReviewedHead)
+	if errors.Is(e, ErrNotWritten) {
+		p.State, p.Reason = "withheld", e.Error()
+		b, _ = json.Marshal(p)
+		if se := s.Audit.Save(ctx, "publication", id, b); se != nil {
+			return Publication{State: "pending", Decision: d}, se
+		}
+		return p, nil
+	}
 	if e != nil {
 		return p, e
 	}

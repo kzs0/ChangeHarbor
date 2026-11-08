@@ -37,10 +37,13 @@ infrastructure; event payload paths never authorize cloning or source execution.
 Missing Git objects produce an error, not a completed review. Live model and forge
 credentials must be supplied by the operator and remain outside repository input.
 
-GitLab native approval/protected-CI provenance cannot be established generically
-by the current API adapter, so automatic submission is withheld. GitHub submission
-also requires the supported protection/check facts and host policy; unsupported
-human/protection requirements remain unmet. Native protections remain necessary.
+GitLab submission is supported when live facts establish native approval reset,
+branch protection, pipeline requirements, trusted head-pipeline provenance and
+bot-completable approval rules (see internal/forge/gitlab/CONTRACT.md); GitLab
+Free lacks the Premium approval endpoints and remains withheld. GitHub
+submission requires the supported protection/check facts and host policy;
+unsupported human/protection requirements remain unmet. Native protections
+remain necessary.
 
 Verified history counting does not turn a new installation into known-zero
 familiarity. Provider backfill evidence must cover the configured interval and
