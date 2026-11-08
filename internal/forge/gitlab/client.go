@@ -59,8 +59,10 @@ func statusCode(e error) int {
 type Change struct {
 	RepositoryID, SourceRepositoryID, HeadOID, TargetOID, MergeBaseOID string
 	TargetBranch, State                                                string
-	Draft                                                              bool
-	HeadPipelineID                                                     int64
+	// StartOID is diff_refs.start_sha, needed to position diff discussions.
+	StartOID       string
+	Draft          bool
+	HeadPipelineID int64
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body io.Reader, out any) error {
@@ -169,7 +171,7 @@ func (c *Client) Change(ctx context.Context, id string, number int) (Change, err
 	if branch.Name != wire.TargetBranch || !oid.MatchString(branch.Commit.ID) {
 		return Change{}, errors.New("unverified target branch revision")
 	}
-	out := Change{RepositoryID: fmt.Sprint(x.TargetProjectID), SourceRepositoryID: fmt.Sprint(x.SourceProjectID), HeadOID: x.SHA, TargetOID: branch.Commit.ID, MergeBaseOID: x.DiffRefs.BaseSHA,
+	out := Change{RepositoryID: fmt.Sprint(x.TargetProjectID), SourceRepositoryID: fmt.Sprint(x.SourceProjectID), HeadOID: x.SHA, TargetOID: branch.Commit.ID, MergeBaseOID: x.DiffRefs.BaseSHA, StartOID: x.DiffRefs.StartSHA,
 		TargetBranch: wire.TargetBranch, State: wire.State, Draft: wire.Draft || wire.WIP}
 	if wire.HeadPipeline != nil {
 		if wire.HeadPipeline.ID <= 0 {

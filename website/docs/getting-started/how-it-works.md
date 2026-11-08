@@ -46,7 +46,7 @@ Each kind of write has its own switch in [`publish`](../configuration/reference.
 | --- | --- | --- |
 | `off` | Nothing happens. | Nothing happens. |
 | `shadow` (default) | Every live check runs, and the result says *would approve* or *would withhold: reason*. Nothing is written. | The comment is rendered and printed. |
-| `submit` / `post` | Approves the exact reviewed commit. | Creates or updates the summary comment. |
+| `submit` / `post` | Approves the exact reviewed commit. | Creates or updates the summary comment, and (with `publish.inline_comments`) one comment per finding on its changed line. |
 
 Start every repository in `shadow`, then turn writes on when the shadow results
 look right.

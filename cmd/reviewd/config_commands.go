@@ -231,7 +231,7 @@ func (u unifiedConfig) compile(name string) (forgeConfig, map[string]string, err
 	}
 	c := forgeConfig{Provider: r.Provider, WebBase: ep.WebBase, APIBase: ep.APIBase, Owner: ep.Owner, Repository: ep.Path,
 		RepositoryID: l.RepositoryID, SourceRepositoryID: l.SourceRepositoryID, RepoPath: r.Mirror.Path, TokenEnv: r.TokenEnv,
-		PolicyFile: r.Policy, Branch: r.Branch, BotUserID: l.BotUserID, Mode: approvalModes[r.Publish.Approvals], CommentMode: commentModes[r.Publish.Comments], Protections: r.Publish.Protections,
+		PolicyFile: r.Policy, Branch: r.Branch, BotUserID: l.BotUserID, Mode: approvalModes[r.Publish.Approvals], CommentMode: commentModes[r.Publish.Comments], InlineCommentMode: commentModes[r.Publish.InlineComments], Protections: r.Publish.Protections,
 		name: name, response: r.Response, modelConfig: u.settings.Models[r.Model]}
 	src["repository_id"], src["source_repository_id"], src["branch"], src["bot_user_id"] = "lock", "lock", "file", "lock"
 	if c.Branch == "" {
@@ -292,9 +292,10 @@ func (c forgeConfig) effective() map[string]any {
 	out := map[string]any{"provider": c.Provider, "web_base": c.WebBase, "api_base": c.APIBase, "repository": strings.Trim(c.Owner+"/"+c.Repository, "/"),
 		"repository_id": c.RepositoryID, "source_repository_id": c.SourceRepositoryID, "branch": c.Branch, "mirror": c.RepoPath, "sync_remote": c.SyncRemote,
 		"policy": c.PolicyFile, "model": c.modelConfig, "response": c.response, "token_env": c.TokenEnv, "bot_user_id": c.BotUserID,
-		"approvals":   map[string]string{"off": "off", "evaluate": "shadow", "submit": "submit", "": "off", "shadow": "off"}[c.Mode],
-		"comments":    map[string]string{"off": "off", "": "shadow", "post": "post"}[c.CommentMode],
-		"protections": map[string]string{"": "required", "required": "required", "advisory": "advisory"}[c.Protections]}
+		"approvals":       map[string]string{"off": "off", "evaluate": "shadow", "submit": "submit", "": "off", "shadow": "off"}[c.Mode],
+		"comments":        map[string]string{"off": "off", "": "shadow", "post": "post"}[c.CommentMode],
+		"inline_comments": map[string]string{"off": "off", "": "shadow", "post": "post"}[c.InlineCommentMode],
+		"protections":     map[string]string{"": "required", "required": "required", "advisory": "advisory"}[c.Protections]}
 	if c.Provider == "gitlab" {
 		jobs := []string{}
 		for j := range c.RequiredChecks {
@@ -603,7 +604,8 @@ func configMigrate(args []string) (int, error) {
 	}
 	approvals := map[string]string{"": "off", "shadow": "off", "off": "off", "evaluate": "shadow", "submit": "submit"}[c.Mode]
 	comments := map[string]string{"": "shadow", "off": "off", "post": "post"}[c.CommentMode]
-	publishSettings := map[string]any{"approvals": approvals, "comments": comments}
+	inline := map[string]string{"": "shadow", "off": "off", "post": "post"}[c.InlineCommentMode]
+	publishSettings := map[string]any{"approvals": approvals, "comments": comments, "inline_comments": inline}
 	if c.Protections != "" {
 		publishSettings["protections"] = c.Protections
 	}

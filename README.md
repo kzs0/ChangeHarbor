@@ -140,6 +140,14 @@ indented, so it cannot trigger GitLab quick actions, mentions or markup.
 GitHub identity is verified from the write response (App installation tokens
 cannot call `/user`); GitLab tokens are verified up front.
 
+With `publish.inline_comments: post`, the same command also posts one comment
+per finding on its changed line (GitLab diff discussions; one GitHub COMMENT
+review). Findings are identified by a fingerprint of path, category and title,
+so re-runs and new pushes never duplicate them; a finding the latest review no
+longer reports has its comment marked "possibly outdated" (never deleted or
+resolved) and unmarked if it returns. The summary includes a per-file
+walkthrough when the model provides one.
+
 ### GitLab submission
 
 GitLab repositories may set `token_scheme` (`private-token` default, or

@@ -170,6 +170,15 @@
                   "advisory"
                 ],
                 "description": "required (default): approve only when the forge's own protections are in place. advisory: approve regardless of protection settings; doctor reports gaps as warnings. Must be set explicitly."
+              },
+              "inline_comments": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "shadow",
+                  "post"
+                ],
+                "description": "off, shadow (plan only, no remote calls) or post (one comment per anchored finding on its changed line; findings no longer reported are marked possibly outdated). Default shadow."
               }
             }
           },

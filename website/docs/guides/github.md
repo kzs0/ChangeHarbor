@@ -1,6 +1,6 @@
 # Set up on GitHub
 
-This guide sets up one GitHub repository for reviews, summary comments and
+This guide sets up one GitHub repository for reviews, summary and inline comments and
 revision-bound approvals.
 
 !!! note "Branch protection"
@@ -128,7 +128,9 @@ reviewd publish --run RUN_ID
 
 ## 8. Turn writes on and automate
 
-Set `publish.comments: post`, then `publish.approvals: submit`. Run the
+Set `publish.comments: post` and `publish.inline_comments: post` (one comment per
+finding on its changed line, posted as a single review), then
+`publish.approvals: submit`. Run the
 [service](service.md), then add a webhook in **Settings → Webhooks**:
 
 - **Payload URL**: `https://changeharbor.example.com/webhooks/github`

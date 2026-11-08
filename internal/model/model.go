@@ -59,6 +59,15 @@ type Review struct {
 	MergeRiskRationale   string    `json:"merge_risk_rationale"`
 	MergeRiskEvidenceIDs []string  `json:"merge_risk_evidence_ids"`
 	Limitations          []string  `json:"limitations"`
+	// Walkthrough optionally summarises each changed file. Paths must be
+	// changed files (validated by the review engine against the diff).
+	Walkthrough []WalkthroughEntry `json:"walkthrough,omitempty"`
+}
+
+// WalkthroughEntry is one file of the per-file walkthrough.
+type WalkthroughEntry struct {
+	Path    string `json:"path"`
+	Summary string `json:"summary"`
 }
 
 func ValidateReview(r Response, ids []string) (Review, error) {
@@ -113,6 +122,13 @@ func ValidateReview(r Response, ids []string) (Review, error) {
 		if err := check(f.EvidenceIDs); err != nil {
 			return out, err
 		}
+	}
+	seen := map[string]bool{}
+	for _, w := range out.Walkthrough {
+		if w.Path == "" || !safeAnchorPath(w.Path) || w.Summary == "" || seen[w.Path] {
+			return out, fmt.Errorf("invalid walkthrough entry")
+		}
+		seen[w.Path] = true
 	}
 	return out, nil
 }

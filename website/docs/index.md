@@ -25,7 +25,10 @@ from a local mirror, and never merges anything.
    context, and returns findings plus a merge risk score from 1 to 10.
 2. **Enforces your risk policy.** Path, size and familiarity rules set a
    minimum risk the model can't lower.
-3. **Comments** one summary on the MR/PR and keeps it up to date.
+3. **Comments** one summary on the MR/PR, with a per-file walkthrough, plus
+   one comment per finding on the line it's about. When a finding goes away,
+   its comment is marked *possibly outdated*; nothing is duplicated across
+   pushes.
 4. **Approves** only when every requirement holds on the live forge:
     - the risk is at or below your threshold;
     - checks passed on the reviewed commit;

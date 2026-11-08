@@ -41,6 +41,12 @@ func RenderReview(r review.Result) (ReviewReports, error) {
 		}
 		fmt.Fprintf(&b, "Evidence: %s\n", strings.Join(f.EvidenceIDs, ", "))
 	}
+	if len(r.Review.Walkthrough) > 0 {
+		b.WriteString("Walkthrough:\n")
+		for _, w := range r.Review.Walkthrough {
+			fmt.Fprintf(&b, "%s: %s\n", w.Path, w.Summary)
+		}
+	}
 	for _, v := range r.Review.UnresolvedQuestions {
 		fmt.Fprintf(&b, "Unresolved question: %s\n", v)
 	}
