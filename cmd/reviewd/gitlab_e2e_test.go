@@ -98,6 +98,10 @@ func (f *fakeGitLab) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && strings.HasPrefix(path, "/projects/9/repository/branches/"):
 		name := strings.TrimPrefix(path, "/projects/9/repository/branches/")
 		reply(200, fmt.Sprintf(`{"name":%q,"commit":{"id":%q}}`, strings.ReplaceAll(name, "%2F", "/"), f.target))
+	case r.Method == "GET" && path == "/projects/group%2Fapp":
+		reply(200, `{"id":9,"default_branch":"main","path_with_namespace":"group/app"}`)
+	case r.Method == "GET" && path == "/projects/fork%2Fapp":
+		reply(200, `{"id":12,"default_branch":"main","path_with_namespace":"fork/app"}`)
 	case r.Method == "GET" && path == "/user":
 		reply(200, fmt.Sprintf(`{"id":%d,"username":"reviewd-bot"}`, f.userID))
 	case r.Method == "GET" && path == "/projects/9":
