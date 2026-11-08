@@ -140,7 +140,7 @@ func TestGitLabCommentE2ECreatesThenUpdatesOwnedNote(t *testing.T) {
 		t.Fatalf("rerun wrote: exit %d posts %d puts %d", code, n.posts, n.puts)
 	}
 	// A new review run updates the same owned note in place.
-	os.WriteFile(x.policy, []byte(`{"base_minimum":1,"auto_approve_max":4,"required_checks":["test"]}`), 0600)
+	os.WriteFile(x.policy, []byte(`{"base_minimum":2,"auto_approve_max":3,"required_checks":["test"]}`), 0600)
 	run2 := x.review()
 	if run2 == run {
 		t.Fatal("expected a distinct run")
@@ -376,14 +376,14 @@ func TestGitHubCommentE2ECreatesUpdatesAndChecksAuthor(t *testing.T) {
 	if code, out, stderr := x.comment(run); code != 0 || decodeComment(t, out).RemoteID != "201" || posts != 1 || !strings.Contains(list[0].Body, "<!-- reviewd:summary github:10:1 -->") {
 		t.Fatalf("create exit %d %s %s", code, out, stderr)
 	}
-	os.WriteFile(x.policy, []byte(`{"base_minimum":1,"auto_approve_max":4,"required_checks":["test"]}`), 0600)
+	os.WriteFile(x.policy, []byte(`{"base_minimum":2,"auto_approve_max":3,"required_checks":["test"]}`), 0600)
 	run2 := review()
 	if code, _, stderr := x.comment(run2); code != 0 || posts != 1 || patches != 1 {
 		t.Fatalf("update exit %d %s posts %d patches %d", code, stderr, posts, patches)
 	}
 	// GitHub identity is verified from the write response author.
 	list, author = nil, 6
-	os.WriteFile(x.policy, []byte(`{"base_minimum":1,"auto_approve_max":5,"required_checks":["test"]}`), 0600)
+	os.WriteFile(x.policy, []byte(`{"base_minimum":3,"auto_approve_max":3,"required_checks":["test"]}`), 0600)
 	run3 := review()
 	if code, _, stderr := x.comment(run3); code != 1 || !strings.Contains(stderr, "identity") {
 		t.Fatalf("foreign author accepted: exit %d %s", code, stderr)

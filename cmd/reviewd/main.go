@@ -64,13 +64,17 @@ func runCommand(ctx context.Context, args []string) int {
 		return code
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: reviewd context|journal|review|assess|release|explain|evaluate|serve|backup|restore|publish (shadow mode; use -h)")
+		fmt.Fprintln(os.Stderr, "usage: reviewd context|journal|review|assess|release|explain|evaluate|serve|backup|restore|publish|comment (shadow mode; use -h)")
 		return 2
 	}
 	var err error
 	switch args[0] {
-	case "publish":
-		code, e := publishCommand(ctx, args[1:])
+	case "publish", "comment":
+		command := publishCommand
+		if args[0] == "comment" {
+			command = commentCommand
+		}
+		code, e := command(ctx, args[1:])
 		if e != nil {
 			fmt.Fprintln(os.Stderr, e)
 			if code == 0 {

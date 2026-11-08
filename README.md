@@ -66,6 +66,25 @@ contain the captured commits. The default publish mode is shadow. Submission
 requires supported live protection/check facts and matching saved provenance;
 unknown native/human requirements withhold approval. No auto-merge occurs.
 
+### Review comments
+
+```sh
+bin/reviewd comment --run RUN_ID --forge-config /trusted/forge.json \
+  --state /data/reviewd
+```
+
+Posts or updates one summary comment per PR/MR, owned by `bot_user_id` and
+identified by a stable `<!-- reviewd:summary ... -->` marker. Comments by any
+other author are never edited, even if they contain the marker. Off by
+default: set `"comment_mode": "post"` (and `bot_user_id`) to write; otherwise
+the command prints the body. Posting is withheld when the PR head or target
+moved since the review. Intent is recorded before writing and ambiguous writes
+are reconciled by listing comments before any retry. Model-derived text is
+placed in a code fence, with control characters removed and line-leading `/`
+indented, so it cannot trigger GitLab quick actions, mentions or markup.
+GitHub identity is verified from the write response (App installation tokens
+cannot call `/user`); GitLab tokens are verified up front.
+
 ### GitLab submission
 
 GitLab forge configuration uses `project_id` (equal to `repository_id`),
