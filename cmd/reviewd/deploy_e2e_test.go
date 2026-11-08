@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -288,6 +289,7 @@ func TestDoctorE2E(t *testing.T) {
 	if len(x.fake.writes) != 0 {
 		t.Fatalf("doctor wrote: %v", x.fake.writes)
 	}
+	// Protection settings are advisory: approvals don't depend on them.
 	x.fake.protected = `{"name":"main","allow_force_push":true}`
 	x.fake.member = `{"id":5,"access_level":40}`
 	code, d, _ = x.doctor()
@@ -297,8 +299,13 @@ func TestDoctorE2E(t *testing.T) {
 			failed[c.Name] = c.Severity
 		}
 	}
-	if code != 4 || d.OK || failed["branch_protection"] != "error" || failed["project_role"] != "warning" {
+	if code != 0 || !d.OK || failed["branch_protection"] != "warning" || failed["project_role"] != "warning" {
 		t.Fatalf("exit %d failed %v", code, failed)
+	}
+	// What ChangeHarbor itself needs is still an error.
+	x.fake.tokenSelf = `{"active":true,"scopes":["read_api"]}`
+	if code, d, _ = x.doctor(); code != 4 || d.OK {
+		t.Fatalf("read_api token not an error: exit %d", code)
 	}
 }
 
@@ -402,5 +409,44 @@ func TestChangeURLRoundTrip(t *testing.T) {
 		if e != nil || n != 42 {
 			t.Fatalf("%+v: %d %v (%s)", c, n, e, changeURL(c, 42))
 		}
+	}
+}
+
+// Without approval reset on push, GitLab keeps an approval after new commits.
+// ChangeHarbor withdraws its own approval on every MR event before reviewing
+// the new head, so an approval never outlives the commit it was given for.
+func TestMREventWithdrawsApprovalBeforeReviewingNewHead(t *testing.T) {
+	x := publishedFixture(t)
+	x.fake.approvalSettings = `{"reset_approvals_on_push":false}`
+	first := x.head
+	x.git("checkout", "-q", "feature")
+	os.WriteFile(filepath.Join(x.repo, "a"), []byte("second\n"), 0600)
+	x.git("commit", "-qam", "second push")
+	x.head = x.git("rev-parse", "HEAD")
+	x.git("checkout", "-q", "main")
+	x.fake.head = x.head
+	x.fake.pipeline["sha"] = x.head
+	x.cfg.Mode = "submit"
+	x.writeConfig()
+	if e := processEvent(context.Background(), serverFor(x), jobs.Job{ID: "gitlab:d2", Kind: "review"}, mrHook(x.head)); e != nil {
+		t.Fatal(e)
+	}
+	if x.fake.unapproves != 1 {
+		t.Fatalf("old approval not withdrawn: unapproves %d", x.fake.unapproves)
+	}
+	if len(x.fake.approveSHAs) != 2 || x.fake.approveSHAs[0] != first || x.fake.approveSHAs[1] != x.head {
+		t.Fatalf("approvals %v", x.fake.approveSHAs)
+	}
+	unapprove, approve := -1, -1
+	for i, w := range x.fake.writes {
+		if strings.HasSuffix(w, "/unapprove") {
+			unapprove = i
+		}
+		if strings.HasSuffix(w, "/approve") {
+			approve = i
+		}
+	}
+	if unapprove > approve {
+		t.Fatalf("withdrawal must precede the new approval: %v", x.fake.writes)
 	}
 }
