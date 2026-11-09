@@ -76,7 +76,7 @@ Under `repositories.<name>`:
 | `token_env` | required unless `github.app` | Variable holding the forge token. Set exactly one of `token_env` and `github.app`. |
 | `token_scheme` | `private-token` | GitLab only: `private-token` or `bearer`. |
 | `bot_user_id` | from the lock | The bot's numeric user ID. Resolved from `/user`, or for a GitHub App from its `<slug>[bot]` user. |
-| `bot_username` | from the lock | The bot's login, used for the `@<bot_username> review` comment command and the retry hint in status comments. Resolved with `bot_user_id` (for a GitHub App, `<slug>[bot]`). If you set `bot_user_id` yourself, set this too; without it only GitHub's `/changeharbor review` form works. |
+| `bot_username` | from the lock | The bot's login, used for the `@<bot_username> review` comment command and the retry hint in status comments. Resolved with `bot_user_id` (for a GitHub App, `<slug>[bot]`). For a GitHub App it's always resolved. With a token, if you set `bot_user_id` yourself, set this too; without it only GitHub's `/changeharbor review` form works. |
 | `fork_source` | — | The one fork whose MRs/PRs are accepted, e.g. `contributors/app`. |
 | `branch` | default branch, pinned in the lock | Target branch reviews and approvals are for. |
 | `policy` | required | [Risk policy](policy.md) file. |
@@ -119,7 +119,7 @@ change or its target moves.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `github.required_checks` | — | Check name → ID of the GitHub App that must have produced it, e.g. `test: "15368"` (GitHub Actions). |
-| `github.app` | — | Authenticate as a GitHub App instead of `token_env`. See the [GitHub guide](../guides/github.md#authenticate-as-a-github-app). |
+| `github.app` | — | Authenticate as a GitHub App instead of `token_env`. See the [GitHub guide](../guides/github.md#2-create-the-github-app). |
 | `github.app.app_id` | required with `github.app` | Numeric App ID. |
 | `github.app.private_key_env` | required with `github.app` | Variable holding the App's PEM private key (PKCS#1 or PKCS#8 RSA). |
 | `github.app.installation_id` | resolved into the lock | Numeric installation ID. When omitted, `reviewd config resolve` looks it up. |
