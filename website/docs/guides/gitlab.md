@@ -21,14 +21,17 @@ creates one for you.
 1. Go to **Settings → Access tokens → Add new token**.
 2. Set **Role** to **Developer**. Developer can approve but can't merge;
    Maintainer works, but `doctor` warns that it's more than needed.
-3. Select the **`api`** scope. `read_api` can't approve or comment.
+3. Select the **`api`** scope (`read_api` can't approve or comment), and
+   **`read_repository`** so the same token can fetch the mirror.
 4. Save the token where ChangeHarbor runs:
 
     ```sh
     export GITLAB_TOKEN=glpat-...
     ```
 
-You don't need to look up the bot's user ID. `reviewd config resolve` finds it.
+You don't need to look up the bot's user ID or username.
+`reviewd config resolve` finds both, and the username is what people type in
+the review command.
 
 ## 3. Make the pipeline definition trustworthy
 
@@ -77,9 +80,15 @@ turn **Allowed to force push** off.
 
 ## 5. Create a mirror
 
-ChangeHarbor reads code only from a local mirror. A read-only **deploy token**
-(**Settings → Repository → Deploy tokens**, scope `read_repository`) keeps
-mirror credentials separate from the bot:
+ChangeHarbor reads code only from a local mirror. The simplest setup lets it
+create and fetch the mirror with the bot's token: set `mirror.auth: token` in
+step 7. The first review clones `mirror.path`, and every review and approval
+check fetches the target branch and the MR's head first. The token reaches
+git only through its environment; it's never written into the mirror.
+
+To keep mirror credentials separate from the bot, clone it yourself with a
+read-only **deploy token** (**Settings → Repository → Deploy tokens**, scope
+`read_repository`) and leave `mirror.auth` out:
 
 ```sh
 git clone --mirror \
@@ -87,8 +96,8 @@ git clone --mirror \
   /srv/mirrors/app.git
 ```
 
-With `mirror.sync: auto` (the default), ChangeHarbor fetches the target branch
-and the MR's head from `origin` before every review and every approval check.
+With `mirror.sync: auto` (the default), ChangeHarbor then fetches from the
+mirror's `origin`, using the credentials in its URL.
 
 ## 6. Write a policy and a model config
 
@@ -103,7 +112,7 @@ reviewd config init --url https://gitlab.com/group/app \
   --mirror /srv/mirrors/app.git --policy policies/app.json --token-env GITLAB_TOKEN
 ```
 
-Then add your model. The result looks like this:
+Then add your model and `mirror.auth`. The result looks like this:
 
 ```yaml
 # changeharbor.yaml
@@ -116,6 +125,7 @@ repositories:
     token_env: GITLAB_TOKEN
     mirror:
       path: /srv/mirrors/app.git
+      auth: token            # clone and fetch with GITLAB_TOKEN
     policy: policies/app.json
     publish:
       approvals: shadow      # evaluate everything, write nothing
@@ -152,6 +162,9 @@ Do this on a few real MRs. Every *would withhold* reason is listed in
 [Troubleshooting](../operations/troubleshooting.md).
 
 ## 10. Turn writes on
+
+Turn writes on one at a time, as the [rollout checklist](rollout.md)
+describes. The end state:
 
 ```yaml
 # changeharbor.yaml
@@ -199,20 +212,25 @@ repositories:
       suggestions: include          # the default: one-click suggestion blocks
 ```
 
-- **Instructions** are added to the review prompt as trusted guidance. Path
-  instructions are added only when a changed file matches.
-- **Excluded files** (a good start: lockfiles, `vendor/**`, generated code)
-  never reach the model and can't get comments. They're listed in the summary,
-  and risk-policy minimums still count them.
-- **Suggestions** let reviewers apply a fix in one click. A suggestion
-  containing a line that starts with `/` is left out on GitLab, where that
-  line could run a quick action.
-- **Large changes** that don't fit the model's request budget aren't
-  reviewed: the summary comment says so and what to do. With
-  `review.large_changes: partial`, the files that fit are reviewed and the rest
-  are listed as not reviewed. Partial reviews are never approved.
-- Changing `review` (except `review.auto`) invalidates existing reviews; the
-  `publish` settings don't.
+Instructions go into the review prompt as trusted guidance. A path
+instruction is added only when a changed file matches one of its globs.
+
+Excluded files never reach the model and can't get comments. Lockfiles,
+`vendor/**` and generated code are a good start. They're still listed in the
+summary, and risk-policy minimums still count them, so excluding a file
+can't lower a change's risk.
+
+Suggestions let a reviewer apply a fix in one click. On GitLab, a suggestion
+with a line starting with `/` is left out, because that line could run a
+quick action.
+
+A change that doesn't fit the model's request budget isn't reviewed; the
+summary comment says so and what to do. With `review.large_changes: partial`
+the files that fit are reviewed and the rest are listed. Partial reviews are
+never approved.
+
+Changing anything under `review` except `review.auto` invalidates existing
+reviews. The `publish` settings don't.
 
 ## 11. Automate with webhooks
 
@@ -232,11 +250,15 @@ skipped until they are ready; `review.auto` can skip more. See
 [Automatic reviews](service.md#automatic-reviews). Each push to `main`
 re-checks earlier approvals and withdraws any whose target moved.
 
-To review again, comment `@<bot_username> review` (for example
-`@reviewd-bot review`) as the first line. The author needs Developer access or
-above. The username is resolved into the lock by `reviewd config resolve`.
-GitLab runs line-leading `/` commands as quick actions, so there is no slash
-form.
+To review again, comment `@<bot_username> review` as the first line. The
+author needs Developer access or above. The username comes from the lock,
+where `reviewd config resolve` put it; for a project access token it looks
+like `project_123_bot_4f2c...`, and `reviewd config check` shows it. Set
+`bot_username` to override it. GitLab runs line-leading `/` commands as
+quick actions, so there is no slash form.
+
+The **Comments** trigger sends GitLab's *Note Hook*. Only comments on merge
+requests are read; comments on issues, commits and snippets are ignored.
 
 ## Fork merge requests
 

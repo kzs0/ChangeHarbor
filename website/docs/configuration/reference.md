@@ -30,16 +30,19 @@ repositories:
 
 ## Rules that apply everywhere
 
-- **Omit a key to get its default.** An empty value (`branch: ""` or
-  `branch:`) is an error, never "use the default".
-- **Unknown keys are errors**, and errors say where and suggest a fix:
-  `repositories.app.gitlab.ci_trus: unknown key; did you mean "ci_trust"?`
-- **Plain YAML only.** Anchors, aliases, merge keys (`<<`), custom tags,
-  duplicate keys and multiple documents are rejected.
-- **Unquoted numbers stay as written** in text fields: `bot_user_id: 12345`,
-  `branch: 1.10`. `true`/`false` in a text field is an error. Quote it.
-- **No other environment variables** change behaviour. Only `$CHANGEHARBOR_CONFIG`,
-  `$CHANGEHARBOR_STATE` and the secrets you name are read.
+To get a default, leave the key out. An empty value (`branch: ""` or
+`branch:`) is an error, never a request for the default.
+
+Unknown keys are errors too, and the error says where and suggests a fix:
+`repositories.app.gitlab.ci_trus: unknown key; did you mean "ci_trust"?`
+
+The file is plain YAML. Anchors, aliases, merge keys (`<<`), custom tags,
+duplicate keys and multiple documents are rejected. In text fields,
+unquoted numbers stay as written (`bot_user_id: 12345`, `branch: 1.10`), and
+`true` or `false` is an error until you quote it.
+
+Apart from `$CHANGEHARBOR_CONFIG`, `$CHANGEHARBOR_STATE` and the secrets you
+name, no environment variable changes behaviour.
 
 ## Top level
 
@@ -76,7 +79,7 @@ Under `repositories.<name>`:
 | `token_env` | required unless `github.app` | Variable holding the forge token. Set exactly one of `token_env` and `github.app`. |
 | `token_scheme` | `private-token` | GitLab only: `private-token` or `bearer`. |
 | `bot_user_id` | from the lock | The bot's numeric user ID. Resolved from `/user`, or for a GitHub App from its `<slug>[bot]` user. |
-| `bot_username` | from the lock | The bot's login, used for the `@<bot_username> review` comment command and the retry hint in status comments. Resolved with `bot_user_id` (for a GitHub App, `<slug>[bot]`). If you set `bot_user_id` yourself, set this too; without it only GitHub's `/changeharbor review` form works. |
+| `bot_username` | from the lock | The bot's login, used for the `@<bot_username> review` comment command and the retry hint in status comments. Resolved with `bot_user_id` (for a GitHub App, `<slug>[bot]`). For a GitHub App it's always resolved. With a token, if you set `bot_user_id` yourself, set this too; without it only GitHub's `/changeharbor review` form works. |
 | `fork_source` | — | The one fork whose MRs/PRs are accepted, e.g. `contributors/app`. |
 | `branch` | default branch, pinned in the lock | Target branch reviews and approvals are for. |
 | `policy` | required | [Risk policy](policy.md) file. |
@@ -119,7 +122,7 @@ change or its target moves.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `github.required_checks` | — | Check name → ID of the GitHub App that must have produced it, e.g. `test: "15368"` (GitHub Actions). |
-| `github.app` | — | Authenticate as a GitHub App instead of `token_env`. See the [GitHub guide](../guides/github.md#authenticate-as-a-github-app). |
+| `github.app` | — | Authenticate as a GitHub App instead of `token_env`. See the [GitHub guide](../guides/github.md#2-create-the-github-app). |
 | `github.app.app_id` | required with `github.app` | Numeric App ID. |
 | `github.app.private_key_env` | required with `github.app` | Variable holding the App's PEM private key (PKCS#1 or PKCS#8 RSA). |
 | `github.app.installation_id` | resolved into the lock | Numeric installation ID. When omitted, `reviewd config resolve` looks it up. |

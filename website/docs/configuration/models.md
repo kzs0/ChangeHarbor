@@ -60,47 +60,24 @@ It makes one request per review, with no tools.
 | `api_key_env` | Environment variable holding the API key. |
 | `api_key_header` | Header that carries the key, e.g. `api-key` for Azure OpenAI. Default `Authorization` (`openai_chat`) or `x-api-key` (`anthropic_messages`). |
 | `api_key_prefix` | Word sent before the key. Default `Bearer` when the header is `Authorization`, none otherwise. `""` sends the bare key. |
-| `capabilities` | What the model supports. `input_tokens_per_byte` is a conservative estimate used for budgeting. Optional `pricing_known` and `input_price_micros_per_million`/`output_price_micros_per_million` enable cost tracking. |
+| `capabilities` | What the model supports: `context_tokens`, `max_output_tokens`, `structured_output`, and `input_tokens_per_byte`, a whole-number upper bound (1 to 16) on tokens per prompt byte used for budgeting. Optional `pricing_known` with `input_price_micros_per_million` and `output_price_micros_per_million` enables cost tracking. |
 | `limits` | Hard caps per run. `timeout` is a duration such as `"3m"` or `"90s"`, or integer nanoseconds (180000000000 = 3 minutes). `max_attempts` counts transport retries of the same request. Optional `max_cost_micros` caps spend when pricing is known. |
 
-For the Anthropic Messages API:
+Ready-made configs for OpenAI, Azure OpenAI, Anthropic, OpenRouter,
+LiteLLM, vLLM and Ollama are on [Model providers](providers.md), along with
+how the prompt budget is derived and what a review can cost.
 
-<!-- example: model -->
-```json
-{
-  "api": "anthropic_messages",
-  "model": "review-model",
-  "api_key_env": "MODEL_API_KEY",
-  "capabilities": {
-    "context_tokens": 200000,
-    "max_output_tokens": 16000,
-    "input_tokens_per_byte": 1,
-    "structured_output": true
-  },
-  "limits": {
-    "max_request_bytes": 1048576,
-    "max_response_bytes": 1048576,
-    "max_output_tokens": 8000,
-    "max_attempts": 2,
-    "timeout": "3m",
-    "max_total_tokens": 600000
-  }
-}
-```
+A few rules the decoder enforces: unknown and duplicate keys are errors,
+`structured_output` must be `true`, `limits.max_output_tokens` can't exceed
+`capabilities.max_output_tokens`, `max_attempts` is 1 or 2, and the endpoint
+must use `https://` unless it's on loopback. `max_cost_micros` needs
+`pricing_known`.
 
-Schema keywords the Messages API doesn't accept (`minimum`, `maxLength` and
-similar) are left out of the request and still enforced when ChangeHarbor
-validates the response. A refusal or a truncated response is invalid output.
-Rate-limit and overload responses (429, 503, 529) are retried within
-`max_attempts`.
-
-The largest diff a review can send is derived from these limits: the request
-byte cap, the context window less `max_output_tokens`, `max_total_tokens`
-split across attempts, and the cost cap. A change too large for it is not
-reviewed (see `review.large_changes` in the
-[reference](reference.md#review)). `reviewd review --url --max-bytes N` lowers
-the budget further; with a saved `response` the budget is `--max-bytes`, or
-1 MiB.
+The largest diff a review can send is derived from these limits. A change
+too large for it isn't reviewed unless `review.large_changes` is `partial`
+(see the [reference](reference.md#review)). `reviewd review --url URL
+--max-bytes N` lowers the budget for one run; with a saved `response` the
+budget is `--max-bytes`, or 1 MiB.
 
 Every request, attempt and response is recorded in the state directory. If a
 response is lost, ChangeHarbor never silently replays the request.

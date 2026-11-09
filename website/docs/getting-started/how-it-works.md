@@ -2,11 +2,14 @@
 
 ```mermaid
 flowchart LR
-    W[Webhook or CLI] --> C[Capture MR/PR from the forge API]
+    W[MR/PR event] --> T{review.auto}
+    T -->|skipped| S[Log and record the skip]
+    T -->|review| C[Capture MR/PR from the forge API]
+    X[Review command or CLI] --> C
     C --> M[Sync local mirror]
     M --> R[Review: one model call]
     R --> P[Risk policy: enforce minimums]
-    P --> K[Comment: one owned summary]
+    P --> K[Comment: summary and inline]
     P --> G{Live gate}
     G -->|every requirement holds| A[Approve the reviewed commit]
     G -->|anything unknown or changed| H[Withhold, with a reason]
@@ -14,50 +17,79 @@ flowchart LR
 
 ## The pieces
 
-**Forge.** GitHub or GitLab. ChangeHarbor reads the change's identity (head
-and target commits, project IDs) from the API, never from webhook payloads.
+ChangeHarbor talks to one **forge** per repository, GitHub or GitLab. It
+reads the change's identity (head and target commits, project IDs), draft
+state, labels, author and comment text from the API. Webhook payloads only
+tell it which change to look at.
 
-**Mirror.** A local `git` mirror of the repository. Source code is read only
-from here, with hooks and external diff tools disabled. ChangeHarbor can keep
-it fresh itself (`mirror.sync`).
+Source code comes from a local `git` **mirror**, read with hooks and
+external diff tools disabled. With `mirror.sync: auto` ChangeHarbor clones
+the mirror on first use and fetches the target branch and the change's head
+before every review and approval check.
 
-**Review.** Host code builds one prompt: your trusted review instructions
-(`review.instructions`, plus path instructions for the files that changed),
-the exact diff, related source and your trusted policy facts. Files matching
-`review.exclude` are left out and listed in the summary. One model call
-returns findings (optionally with a suggested fix), open questions and
-`model_merge_risk` (1 = lowest risk, 10 = highest). The model has no tools and
-can't ask for more.
+The **review** is one model call. Host code builds the prompt from your
+trusted review instructions (`review.instructions`, plus the path
+instructions for files that changed), the exact diff, related source and
+your policy facts. Files matching `review.exclude` are left out and listed in
+the summary. The model returns findings (optionally with a suggested fix),
+a per-file walkthrough, open questions and `model_merge_risk`, from 1 (lowest
+risk) to 10. It has no tools and can't ask for more. The reply is validated
+against a schema, and a finding that names a line must point at a changed
+line.
 
-**Risk policy.** A [JSON policy](../configuration/policy.md) sets minimum risk
-scores from facts the model can't change: touched paths, change size, author
-familiarity. The **effective risk** is the higher of the model's score and
-the policy's minimum. It's approvable only at or below your threshold.
+A change too large for the model's request budget isn't sent at all, unless
+`review.large_changes: partial` is set, in which case as many whole files as
+fit are reviewed and the rest are listed. A partial review is never
+approved. The budget is derived from the [model config](../configuration/providers.md#how-big-a-change-fits).
 
-**Publication.** Each review is saved with its provenance: commits, policy
-digest and config identity. Before commenting or approving, ChangeHarbor
-re-reads the live forge and withholds if anything moved, or (by default) if
+The [risk policy](../configuration/policy.md) sets minimum risk scores from
+facts the model can't change: touched paths, change size, author
+familiarity. The effective risk is the higher of the model's score and the
+policy's minimum, and a change is approvable only at or below your
+threshold. A `high` or `critical` finding, or an open question, also
+withholds.
+
+Each review is saved with its provenance: commits, policy digest and config
+identity. Before **publishing** a comment or an approval, ChangeHarbor
+re-reads the live forge and withholds if anything moved, or, by default, if
 the forge's own protections aren't in place. `publish.protections: advisory`
-opts out of the protection requirement. In both modes ChangeHarbor withdraws
-its own approval as soon as the change or its target moves.
+drops the protection requirement. Either way ChangeHarbor withdraws its own
+approval as soon as the change or its target moves.
+
+## What starts a review
+
+[`reviewd serve`](../guides/service.md) reviews a change when it's opened,
+reopened, gets new commits, is marked ready, or is retargeted. Edits to the
+title, labels or description don't start one. Before reviewing, the service
+checks [`review.auto`](../configuration/reference.md#review): drafts are
+skipped by default, and you can skip bot authors, labels and title keywords.
+
+Anyone with write access can ask for a review by commenting
+`@<bot_username> review` (or `/changeharbor review` on GitHub). That skips
+`review.auto`, drafts included. `reviewd review --url` reviews a change by
+hand.
 
 ## Modes
 
 Each kind of write has its own switch in [`publish`](../configuration/reference.md#publish):
 
-| Mode | Approvals | Comments |
+| Mode | Approvals | Comments and inline comments |
 | --- | --- | --- |
 | `off` | Nothing happens. | Nothing happens. |
-| `shadow` (default) | Every live check runs, and the result says *would approve* or *would withhold: reason*. Nothing is written. | The comment is rendered and printed. |
-| `submit` / `post` | Approves the exact reviewed commit. | Creates or updates the summary comment, and (with `publish.inline_comments`) one comment per finding on its changed line. |
+| `shadow` (default) | `reviewd publish` runs every live check and reports *would approve* or *would withhold: reason*. Nothing is written. | `reviewd comment` prints what it would post. |
+| `submit` / `post` | Approves the exact reviewed commit. | Creates or updates the summary comment and, with `publish.inline_comments: post`, one comment per finding on its changed line. |
 
-Start every repository in `shadow`, then turn writes on when the shadow results
-look right.
+In `shadow` the service reviews and saves results but writes nothing. Start
+every repository there, then follow the [rollout checklist](../guides/rollout.md).
 
 ## Two files
 
-- **`changeharbor.yaml`**: what you want. Reviewed and committed.
-- **`changeharbor.lock.yaml`**: identities ChangeHarbor looked up for you:
-  project IDs, default branch and bot user. Written by
-  `reviewd config resolve`, and committed too. If you change something the lock
-  depends on, commands stop and ask you to resolve again.
+`changeharbor.yaml` says what you want. It is reviewed and committed, and it
+lives outside the repositories it reviews, so a pull request can't change
+how it's reviewed.
+
+`changeharbor.lock.yaml` holds the identities ChangeHarbor looked up for
+you: project IDs, default branch, bot user and username, and the GitHub App
+installation. `reviewd config resolve` writes it, and you commit it too. If
+you change something the lock depends on, commands stop and ask you to
+resolve again.
