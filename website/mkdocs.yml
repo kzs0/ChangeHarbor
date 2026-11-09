@@ -64,17 +64,23 @@ nav:
   - Home: index.md
   - Getting started:
       - How it works: getting-started/how-it-works.md
+      - What a review looks like: getting-started/what-a-review-looks-like.md
       - Install: getting-started/install.md
       - Quickstart: getting-started/quickstart.md
   - Set up:
-      - GitLab: guides/gitlab.md
+      - Coming from CodeRabbit: guides/coming-from-coderabbit.md
       - GitHub: guides/github.md
+      - GitLab: guides/gitlab.md
       - Run the service: guides/service.md
+      - Run in a container: guides/container.md
+      - Rollout checklist: guides/rollout.md
   - Configuration:
       - changeharbor.yaml reference: configuration/reference.md
       - Risk policy: configuration/policy.md
       - Models: configuration/models.md
+      - Model providers: configuration/providers.md
   - Operations:
+      - Operating ChangeHarbor: operations/operating.md
       - Troubleshooting: operations/troubleshooting.md
       - Security model: operations/security.md
   - Reference:
