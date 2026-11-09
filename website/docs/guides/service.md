@@ -117,7 +117,8 @@ token. Receipts are stored durably before they are acknowledged.
 
 `/health` reports each repository's write modes, for example
 `{"status":"ok","processing":"durable_worker","repositories":{"gitlab:9":{"approvals":"submit","comments":"post","inline_comments":"shadow"}}}`.
-A repository whose configuration can't be loaded reports `unknown`.
+A repository whose configuration can't be loaded reports `unknown`. The modes
+are read when the service starts; restart it after changing the configuration.
 
 ## Keep it running
 

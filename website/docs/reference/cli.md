@@ -37,7 +37,7 @@ Commands that read `changeharbor.yaml` accept `--config FILE` and
 | --- | --- |
 | `reviewd review --repo PATH --base REV --head REV` | Reviews a local revision range (advisory only; can't be published). |
 | `reviewd assess --run RUN_ID --threshold N` | Re-evaluates a saved review against a threshold, without a model call. |
-| `reviewd explain --run RUN_ID` | Shows how a saved run's decision was reached. |
+| `reviewd explain --run RUN_ID` | Shows how a saved run's decision was reached. Reads the state named by `--state`, `CHANGEHARBOR_STATE` or the config (`--config`, `CHANGEHARBOR_CONFIG`, `./changeharbor.yaml`). |
 | `reviewd context build --repo PATH --ref REV` | Builds a repository context snapshot. |
 | `reviewd journal reconcile --repo PATH --branch NAME --through REV` | Records merged changes into the change journal. |
 | `reviewd release assess --repo PATH --baseline REV --candidate REV` | Assesses a release candidate. `reviewd release render` renders the result as markdown, HTML or a channel draft. |
