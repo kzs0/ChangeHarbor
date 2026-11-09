@@ -4,9 +4,33 @@ Request {Prompt []byte}; Response {Raw []byte; Truncated bool; ToolCalls bool}; 
 ## HTTP structured adapter
 
 DecodeHTTPConfig(io.Reader), NewHTTP(HTTPConfig) construct a bounded standard-library
-OpenAI-compatible chat-completions adapter. Endpoint is the complete URL. Configuration
-uses snake_case keys; limits.timeout is an integer nanosecond duration. APIKeyEnv
-selects an inherited credential; no credential is persisted in request records.
+adapter that speaks `api: openai_chat` (default; OpenAI-compatible chat completions) or
+`api: anthropic_messages` (Anthropic Messages API, anthropic-version 2023-06-01). Endpoint
+is the complete URL (required for openai_chat; anthropic_messages defaults to
+https://api.anthropic.com/v1/messages). An unknown api is an error. Configuration uses
+snake_case keys; limits.timeout is integer nanoseconds or a Go duration string ("3m"),
+and limits marshal as integer nanoseconds either way, so digests do not depend on the
+spelling. APIKeyEnv selects an inherited credential; no credential is persisted in
+request records. api_key_header (an RFC 7230 token other than Host, Content-Type,
+Content-Length, Transfer-Encoding, Connection or anthropic-version) and api_key_prefix
+(one token; "" sends the bare key) choose how the key is sent; defaults are
+`Authorization: Bearer <key>` for openai_chat and `x-api-key: <key>` for
+anthropic_messages. Both require api_key_env. They are auth, not identity.
+
+Anthropic requests contain exactly model, max_tokens, system, messages and
+output_config.format = {type: json_schema, schema: AnthropicSchema(schema)}; never
+tools, tool_choice, thinking, sampling settings or stream. AnthropicSchema removes
+keywords Anthropic structured outputs reject (minimum, maximum, exclusiveMinimum,
+exclusiveMaximum, multipleOf, minLength, maxLength, minItems, maxItems); host
+validation still enforces them. Text blocks are concatenated; thinking blocks are
+ignored; any other block sets ToolCalls. stop_reason end_turn is complete, refusal sets
+Refused, tool_use sets ToolCalls, anything else (max_tokens, pause_turn, missing) is
+Truncated. Usage maps InputTokens = input_tokens + cache_read_input_tokens +
+cache_creation_input_tokens, OutputTokens = output_tokens, CachedTokens =
+cache_read_input_tokens (CachedKnown when present); missing input or output tokens is
+Usage.Known=false. 529 joins 429/503 as a retryable explicit rejection. The adapter
+version in the claim identity is reviewd-http-v2 for openai_chat (unchanged) and
+reviewd-anthropic-v1 for anthropic_messages, so responses are never reused across APIs.
 Capabilities must explicitly provide context/output windows, structured_output,
 and a conservative input_tokens_per_byte bound appropriate for the provider.
 Tokens are reserved for every permitted attempt, including possibly billed retries.

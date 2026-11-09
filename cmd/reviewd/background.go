@@ -115,5 +115,14 @@ func backgroundSummaryDigest(h *model.HTTP, limits contextbuild.SummaryLimits) s
 		Capabilities             model.Capabilities
 		Transport                model.HTTPLimits
 		Summary                  contextbuild.SummaryLimits
-	}{"reviewd-background-v2", h.Endpoint, h.Model, h.Capabilities, h.Limits, limits})
+	}{backgroundVersion(h), h.Endpoint, h.Model, h.Capabilities, h.Limits, limits})
+}
+
+// backgroundVersion names the summary cache format; the model API joins it
+// only when it is not the default, so existing digests are unchanged.
+func backgroundVersion(h *model.HTTP) string {
+	if h.API != "" && h.API != model.APIOpenAIChat {
+		return "reviewd-background-v2/" + h.API
+	}
+	return "reviewd-background-v2"
 }
