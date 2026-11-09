@@ -473,15 +473,18 @@ func PromptBudget(c HTTPConfig) (int, error) {
 	if int64(l.MaxRequestBytes) < body {
 		body = int64(l.MaxRequestBytes)
 	}
-	if k.PricingKnown && l.MaxCostMicros > 0 && k.InputPriceMicrosPerMillion > 0 {
+	if k.PricingKnown && l.MaxCostMicros > 0 {
 		micros := new(big.Int).Mul(big.NewInt(l.MaxCostMicros/attempts), big.NewInt(1000000))
 		micros.Sub(micros, new(big.Int).Mul(big.NewInt(int64(l.MaxOutputTokens)), big.NewInt(k.OutputPriceMicrosPerMillion)))
-		if micros.Sign() <= 0 {
+		// Even with free input, the priced output reservation must fit.
+		if micros.Sign() < 0 || micros.Sign() == 0 && k.InputPriceMicrosPerMillion > 0 {
 			return 0, fmt.Errorf("model cost cap leaves no room for a prompt")
 		}
-		micros.Quo(micros, new(big.Int).Mul(big.NewInt(k.InputPriceMicrosPerMillion), big.NewInt(int64(k.InputTokensPerByte))))
-		if micros.IsInt64() && micros.Int64() < body {
-			body = micros.Int64()
+		if k.InputPriceMicrosPerMillion > 0 {
+			micros.Quo(micros, new(big.Int).Mul(big.NewInt(k.InputPriceMicrosPerMillion), big.NewInt(int64(k.InputTokensPerByte))))
+			if micros.IsInt64() && micros.Int64() < body {
+				body = micros.Int64()
+			}
 		}
 	}
 	empty, e := a.requestBody(nil, ReviewSchema())
