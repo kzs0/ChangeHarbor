@@ -173,6 +173,7 @@ func normalize(provider, event, key string, b []byte) ([]jobs.Job, error) {
 	kind := ""
 	change := ""
 	generation := 0
+	force := false // review commands are never superseded
 	if provider == "github" {
 		switch event {
 		case "pull_request":
@@ -206,7 +207,7 @@ func normalize(provider, event, key string, b []byte) ([]jobs.Job, error) {
 			if e != nil {
 				return nil, e
 			}
-			change, kind, generation = fmt.Sprintf("github:%d:%d", x.Repository.ID, x.Issue.Number), "review", int(t.Unix())
+			change, kind, generation, force = fmt.Sprintf("github:%d:%d", x.Repository.ID, x.Issue.Number), "review", int(t.Unix()), true
 		case "push":
 			if x.Repository.ID <= 0 || x.Ref == "" || x.After == "" {
 				return nil, fmt.Errorf("push identity required")
@@ -254,7 +255,7 @@ func normalize(provider, event, key string, b []byte) ([]jobs.Job, error) {
 			if e != nil {
 				return nil, e
 			}
-			change, kind, generation = fmt.Sprintf("gitlab:%d:%d", x.Project.ID, x.MergeRequest.IID), "review", int(t.Unix())
+			change, kind, generation, force = fmt.Sprintf("gitlab:%d:%d", x.Project.ID, x.MergeRequest.IID), "review", int(t.Unix()), true
 		case "Push Hook":
 			if x.Project.ID <= 0 || x.Ref == "" || x.After == "" {
 				return nil, fmt.Errorf("push identity required")
@@ -266,5 +267,5 @@ func normalize(provider, event, key string, b []byte) ([]jobs.Job, error) {
 	if kind == "" {
 		return nil, nil
 	}
-	return []jobs.Job{{ID: key, Key: key, ChangeID: change, Kind: kind, Generation: generation}}, nil
+	return []jobs.Job{{ID: key, Key: key, ChangeID: change, Kind: kind, Generation: generation, Force: force}}, nil
 }

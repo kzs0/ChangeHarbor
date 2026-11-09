@@ -219,7 +219,8 @@ func TestGitLabTriggerEventsThroughWebhook(t *testing.T) {
 			continue
 		}
 		// Each review is a new run, so the owned summary is created, then
-		// updated.
+		// updated. Runs are content-addressed, so each job gets a new head.
+		x.addFeatureFile("trigger-"+strings.ReplaceAll(tc.name, " ", "-")+".txt", tc.name+"\n")
 		before := n.posts + n.puts
 		if e := processEvent(context.Background(), s, *j, b); e != nil {
 			t.Fatalf("%s: %v", tc.name, e)
