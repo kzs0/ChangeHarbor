@@ -39,15 +39,18 @@ Use either a **machine user** with a fine-grained personal access token, or a
 
 === "GitHub App"
 
-    Grant the same permissions. Installation tokens can't call `/user`, so set
-    the app's bot user ID yourself:
+    Create a GitHub App with the same repository permissions, install it on
+    the repository and download a private key. Put the PEM in an environment
+    variable:
 
     ```sh
-    gh api users/YOUR-APP-NAME%5Bbot%5D --jq .id
+    export CHANGEHARBOR_APP_KEY="$(cat review-app.private-key.pem)"
     ```
 
-    Put that number in `bot_user_id`. Minting and rotating installation tokens
-    into `GITHUB_TOKEN` is up to your deployment.
+    ChangeHarbor signs a short-lived JWT with the key, exchanges it for an
+    installation token scoped to this one repository, and refreshes the token
+    five minutes before it expires. See
+    [Authenticate as a GitHub App](#authenticate-as-a-github-app).
 
 ## 3. Protect the branch
 
@@ -76,13 +79,18 @@ GitHub Actions is app `15368`.
 
 ## 5. Create a mirror
 
-```sh
-git clone --mirror https://x-access-token:TOKEN@github.com/OWNER/REPO.git \
-  /srv/mirrors/repo.git
-```
+With `mirror.sync: auto` (the default), ChangeHarbor fetches `main` and
+`refs/pull/N/head` before each review and approval check, and clones the
+mirror itself when `mirror.path` doesn't exist yet.
 
-With `mirror.sync: auto`, ChangeHarbor fetches `main` and `refs/pull/N/head`
-before each review and approval check.
+With a GitHub App, or with `mirror.auth: token`, git authenticates with the
+repository's forge token, passed only through git's environment. Nothing is
+stored in the mirror's remote URL. Otherwise the mirror's own git
+configuration supplies credentials; for example, clone it yourself:
+
+```sh
+git clone --mirror https://github.com/OWNER/REPO.git /srv/mirrors/repo.git
+```
 
 ## 6. Write `changeharbor.yaml`
 
@@ -114,6 +122,37 @@ Then:
 reviewd config resolve     # writes changeharbor.lock.yaml
 reviewd config check
 ```
+
+### Authenticate as a GitHub App
+
+Replace `token_env` with `github.app`:
+
+```yaml
+# changeharbor.yaml
+version: 1
+models:
+  default: models/review.json
+repositories:
+  api:
+    url: https://github.com/OWNER/REPO
+    github:
+      app:
+        app_id: 123456
+        private_key_env: CHANGEHARBOR_APP_KEY
+        # installation_id: 7890123   # optional; looked up by config resolve
+      required_checks:
+        test: "15368"
+    mirror:
+      path: /srv/mirrors/repo.git   # cloned on first use; mirror.auth defaults to token
+    policy: policies/api.json
+```
+
+`reviewd config resolve` checks that the key belongs to `app_id`, looks up
+the installation, and records it with the App's bot user
+(`<slug>[bot]`) in the lock. Reviews, comments and approvals then use only
+installation tokens. Tokens, JWTs and the key are kept in memory and never
+written to output, the state directory or the mirror. Switching a repository
+between a token and an App keeps its existing reviews valid.
 
 For GitHub Enterprise Server, set `provider: github`. The API defaults to
 `https://HOST/api/v3`; override it with `api_url`.

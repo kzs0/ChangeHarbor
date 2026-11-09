@@ -99,7 +99,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository_owner }}/reviewd
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -115,6 +115,6 @@ jobs:
           sbom: true
       - uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ghcr.io/${{ github.repository }}
+          subject-name: ghcr.io/${{ github.repository_owner }}/reviewd
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true

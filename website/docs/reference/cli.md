@@ -16,7 +16,7 @@ Commands that read `changeharbor.yaml` accept `--config FILE` and
 | --- | --- |
 | `reviewd config init --url URL --mirror PATH --policy FILE --token-env NAME` | Writes a commented `changeharbor.yaml`, its schema and lock. Never overwrites. Also `--provider`, `--api-url`, `--name`. |
 | `reviewd config resolve` | Looks up IDs from the forge and writes `changeharbor.lock.yaml`. |
-| `reviewd config check` | Validates and prints the effective config, where each value came from, and the keys that invalidate reviews. |
+| `reviewd config check` | Validates and prints the effective config (including `auth`, `github_app_id`, `github_installation_id` and `mirror_auth`), where each value came from, and the keys that invalidate reviews. |
 | `reviewd config schema` | Prints the JSON Schema. |
 | `reviewd config migrate --forge-config FILE [--server-config FILE]` | Converts legacy JSON configs to `changeharbor.yaml` and a lock, offline. |
 | `reviewd doctor [--repo NAME]` | Read-only GitLab preflight: token, role, CI trust, mirror and forge protections. Protection gaps are errors, or warnings with `publish.protections: advisory`. |
@@ -51,4 +51,4 @@ Commands that read `changeharbor.yaml` accept `--config FILE` and
 | --- | --- |
 | `CHANGEHARBOR_CONFIG` | Config path when `--config` isn't given. |
 | `CHANGEHARBOR_STATE` | State directory override (below `--state`). |
-| *(names you configure)* | Forge tokens (`token_env`), webhook secrets and model keys. |
+| *(names you configure)* | Forge tokens (`token_env`), GitHub App private keys (`github.app.private_key_env`), webhook secrets and model keys. |

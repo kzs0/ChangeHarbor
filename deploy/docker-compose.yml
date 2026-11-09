@@ -8,7 +8,7 @@
 # /mirrors.
 services:
   reviewd:
-    image: ghcr.io/kzs0/reviewd:v0.1.0
+    image: ghcr.io/kzs0/reviewd:0.1.0
     command: ["serve", "--config", "/config/changeharbor.yaml"]
     restart: unless-stopped
     env_file: reviewd.env # GITHUB_WEBHOOK_SECRET, CHANGEHARBOR_APP_KEY, model API keys, ...

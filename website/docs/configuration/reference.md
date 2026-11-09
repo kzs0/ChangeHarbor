@@ -118,7 +118,7 @@ change or its target moves.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `github.required_checks` | — | Check name → ID of the GitHub App that must have produced it, e.g. `test: "15368"` (GitHub Actions). |
-| `github.app` | — | Authenticate as a GitHub App instead of `token_env`. See the [GitHub guide](../guides/github.md#github-app). |
+| `github.app` | — | Authenticate as a GitHub App instead of `token_env`. See the [GitHub guide](../guides/github.md#authenticate-as-a-github-app). |
 | `github.app.app_id` | required with `github.app` | Numeric App ID. |
 | `github.app.private_key_env` | required with `github.app` | Variable holding the App's PEM private key (PKCS#1 or PKCS#8 RSA). |
 | `github.app.installation_id` | resolved into the lock | Numeric installation ID. When omitted, `reviewd config resolve` looks it up. |

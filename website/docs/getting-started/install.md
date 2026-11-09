@@ -38,3 +38,20 @@ This replays the offline fixtures with no network access and exits `0`.
 
 `just package` builds a release archive with the binary, licenses and
 documentation for deployment hosts.
+
+Tagged releases attach archives for linux amd64 and arm64, with SHA-256
+checksums.
+
+## Container image
+
+Releases also publish a multi-arch image (`linux/amd64`, `linux/arm64`) with
+provenance and an SBOM:
+
+```sh
+docker pull ghcr.io/kzs0/reviewd:0.1.0
+```
+
+It runs as a non-root user with state in the `/data` volume, and includes
+`git`. [`deploy/docker-compose.yml`](https://github.com/kzs0/ChangeHarbor/blob/main/deploy/docker-compose.yml)
+runs `reviewd serve` behind Caddy for TLS. Pass secrets through the
+environment (an `env_file`), never in the compose file or image.

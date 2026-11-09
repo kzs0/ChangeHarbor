@@ -40,6 +40,11 @@ more. These are the rules it enforces in code.
 - **Least privilege.** `doctor` warns when the bot can merge. Tokens and
   secrets come only from the environment variables you name. Telemetry export
   is off by default.
+- **Credentials stay in memory.** GitHub App JWTs and installation tokens
+  (scoped to the one repository) are never logged or written to the state
+  directory, the lock or the mirror. Git receives a token only through its
+  environment, as a header scoped to `mirror.url`, with credential helpers
+  and redirects disabled.
 
 ## Reporting a vulnerability
 
