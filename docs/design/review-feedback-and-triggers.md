@@ -317,8 +317,13 @@ App (`changeharbor[bot]`) is addressed as `@changeharbor` or
   `/changeharbor`). Anything else is not enqueued. The prefilter only saves
   jobs; the API copy is authoritative.
 - Webhook authentication, delivery IDs and dedup are unchanged. A command
-  shares its change's job key space, so a newer event for the change
-  supersedes a pending command (and vice versa); both review the API head.
+  job is a `review` job for its change, but it is marked forced
+  (`jobs.Job.Force`) and is never superseded: not by a newer event, and not
+  when it arrives after one. Otherwise a newer event that `review.auto`
+  then skips (a push to a draft, say) would silently drop the command. A
+  command still supersedes older pending unforced jobs. When both a command
+  and a newer event run, both review the API head; the second review of an
+  unchanged head reuses the first's model reply.
 
 `worker.Event` gains `CommentID string`. For comment jobs `EventFromJob`
 returns `Kind: "review"`, `RepositoryID`, `ChangeNumber` (`issue.number` /
@@ -438,7 +443,10 @@ eligible) except that `review.auto` is bypassed, drafts included.
 - `publish --run` on a non-completed run returns `withheld` without forge
   calls.
 
-No existing test is changed.
+No existing test is changed. One new test was adjusted:
+`TestGitLabTriggerEventsThroughWebhook` adds a commit before each job,
+because runs are content-addressed and re-reviewing an unchanged head yields
+the same run (whose summary is already published).
 
 ## API
 
@@ -455,7 +463,10 @@ No existing test is changed.
   - `func healthStatus(c serverConfig) healthReport`, `healthReport`,
     `healthRepository`;
   - `const serviceMaxAttempts = 2`.
-- `internal/worker`: `Event.CommentID`; `normalize` rules above.
+- `internal/worker`: `Event.CommentID`; `normalize` rules above (command
+  jobs set `Force`).
+- `internal/jobs`: `Job.Force bool`, stored in a `force` column added to
+  existing queues on open; forced review jobs are never superseded.
 - `internal/review`: `type FilePatch struct{ OldPath, NewPath, Patch string }`;
   `Input.Files`, `Input.Partial`; status `partial`, reason
   `files_omitted_for_size`, coverage `file:<path>`.
@@ -493,7 +504,11 @@ fake model endpoint, and the real webhook handler and queue):
 `triggers_e2e_test.go`, `commands_e2e_test.go`, `health_e2e_test.go`, with
 shared fixtures in `feedback_fixtures_test.go`.
 
+`cmd/reviewd/command_supersede_e2e_test.go` covers a command followed (or
+preceded) by a newer, skipped event through the real queue.
+
 Unit: `cmd/reviewd/feedback_test.go`, `internal/worker/triggers_test.go`,
+`internal/jobs/force_test.go`,
 `internal/config/feedback_test.go`, `internal/review/partial_test.go`,
 `internal/report/partial_test.go`, `internal/model/budget_test.go`,
 `internal/publish/status_test.go`, `internal/forge/github/feedback_test.go`,
