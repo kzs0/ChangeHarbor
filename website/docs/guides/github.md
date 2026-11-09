@@ -184,9 +184,9 @@ until they are ready; `review.auto` can skip more (bot authors, labels, title
 keywords). See [Automatic reviews](service.md#automatic-reviews).
 
 To review again, comment `/changeharbor review`, or `@<bot_username> review`.
-The author needs owner, member or collaborator access. GitHub App tokens can't
-look up their own login, so set `bot_username: <app-slug>[bot]` to use the `@`
-form.
+The author needs owner, member or collaborator access. For a GitHub App,
+`reviewd config resolve` records `<app-slug>[bot]` as the bot username, so
+`@<app-slug> review` works too.
 
 ## Steer and tune the review
 

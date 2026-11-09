@@ -82,8 +82,7 @@ are ignored silently; every decision is recorded in state as
 the same change.
 
 The bot's username comes from `bot_username` or the lock (`reviewd config
-resolve`). GitHub App tokens can't look it up: set
-`bot_username: <app-slug>[bot]`, or use `/changeharbor review`. Subscribe the
+resolve`; for a GitHub App it records `<app-slug>[bot]`). Subscribe the
 webhook to comments: GitHub *Issue comments*, GitLab *Comments*.
 
 ## When a review doesn't complete
