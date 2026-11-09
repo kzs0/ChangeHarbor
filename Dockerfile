@@ -33,8 +33,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 reviewd \
     && useradd --uid 10001 --gid 10001 --home-dir /data --no-create-home --shell /usr/sbin/nologin reviewd \
-    && mkdir -p /data \
-    && chown reviewd:reviewd /data
+    && mkdir -p /data /mirrors \
+    && chown reviewd:reviewd /data /mirrors
 COPY --from=build /out/reviewd /usr/local/bin/reviewd
 USER reviewd
 VOLUME /data
