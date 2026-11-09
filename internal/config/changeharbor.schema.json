@@ -102,6 +102,12 @@
             "type": "string",
             "description": "Numeric user ID the token acts as. Resolved from /user when omitted; set it for GitHub App tokens."
           },
+          "bot_username": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*(\\[bot\\])?$",
+            "maxLength": 255,
+            "description": "Username the token acts as, used for the `@username review` comment command and the retry hint in status comments. Resolved from /user when omitted; set it for GitHub App tokens (app-slug[bot])."
+          },
           "fork_source": {
             "type": "string",
             "description": "Path of the one fork whose merge requests are accepted, e.g. contributors/app. Resolved to an ID in the lock."
@@ -304,6 +310,54 @@
                   "type": "string"
                 },
                 "description": "Globs of files left out of the model's input (generated, vendored, lockfiles). Risk-policy minimums still count them."
+              },
+              "large_changes": {
+                "type": "string",
+                "enum": [
+                  "incomplete",
+                  "partial"
+                ],
+                "default": "incomplete",
+                "description": "What to do when the diff doesn't fit the model's request budget: incomplete posts a status comment and reviews nothing; partial reviews the whole files that fit and lists the rest. Partial reviews are never approved. Changing it invalidates existing reviews."
+              },
+              "auto": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Which changes the service reviews automatically. Does not affect `reviewd review --url` or the review comment command, and does not invalidate reviews.",
+                "properties": {
+                  "drafts": {
+                    "type": "string",
+                    "enum": [
+                      "skip",
+                      "review"
+                    ],
+                    "default": "skip",
+                    "description": "Whether draft pull or merge requests are reviewed automatically."
+                  },
+                  "ignore_authors": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9*][A-Za-z0-9_.*\\[\\]-]*$",
+                      "maxLength": 255
+                    },
+                    "description": "Author logins or usernames not reviewed automatically. * matches any run of characters; matching ignores case."
+                  },
+                  "skip_labels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Label names (case-insensitive) that skip automatic review."
+                  },
+                  "skip_title_keywords": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Case-insensitive title substrings that skip automatic review."
+                  }
+                }
               }
             }
           }
