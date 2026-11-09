@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kzs0/bedrock"
 	"github.com/kzs0/reviewd/internal/archive"
@@ -196,11 +197,16 @@ func extraCommand(ctx context.Context, args []string) (int, error) {
 		return 0, emit(w)
 	case "explain":
 		id := f.String("run", "", "durable ID or saved JSON file")
+		cfg := f.String("config", "", "changeharbor.yaml whose state to read (default $CHANGEHARBOR_CONFIG, then ./changeharbor.yaml if present)")
 		if f.Parse(args[1:]) != nil || *id == "" {
 			return 2, nil
 		}
+		dir, e := explainState(f, *state, *cfg)
+		if e != nil {
+			return 2, e
+		}
 		var v any
-		if e := loadRun(ctx, *state, *id, &v); e != nil {
+		if e := loadRun(ctx, dir, *id, &v); e != nil {
 			return 1, e
 		}
 		return 0, emit(v)
@@ -261,6 +267,32 @@ type serverConfig struct {
 	GitLabSecretEnv        string                      `json:"gitlab_secret_env"`
 }
 
+// explainState picks the state directory like other commands do: --state,
+// then $CHANGEHARBOR_STATE, then the config file's state (--config,
+// $CHANGEHARBOR_CONFIG, or ./changeharbor.yaml when present), then .reviewd.
+func explainState(f *flag.FlagSet, state, cfg string) (string, error) {
+	set := false
+	f.Visit(func(x *flag.Flag) { set = set || x.Name == "state" })
+	if set {
+		return state, nil
+	}
+	if env := os.Getenv("CHANGEHARBOR_STATE"); env != "" {
+		return env, nil
+	}
+	path := configPath(cfg)
+	if _, e := os.Stat(path); e != nil {
+		if cfg != "" || os.Getenv("CHANGEHARBOR_CONFIG") != "" {
+			return "", e
+		}
+		return state, nil
+	}
+	s, _, e := loadSettingsFile(path)
+	if e != nil {
+		return "", e
+	}
+	return filepath.Abs(s.State)
+}
+
 func (c serverConfig) validate() error {
 	if _, e := rebuildInterval(c); e != nil {
 		return e
@@ -319,7 +351,7 @@ func serve(ctx context.Context, c serverConfig) (int, error) {
 	workerFinished := make(chan struct{})
 	go func() {
 		defer close(workerFinished)
-		workerDone <- worker.Run(workCtx, q, worker.RunOptions{WorkerID: "reviewd-local", PollInterval: time.Second, Lease: 30 * time.Second, JobTimeout: 5 * time.Minute, MaxAttempts: serviceMaxAttempts}, func(ctx context.Context, j jobs.Job, b []byte) error { return processEvent(ctx, c, j, b) })
+		workerDone <- worker.Run(workCtx, q, worker.RunOptions{WorkerID: "reviewd-local", PollInterval: time.Second, Lease: 30 * time.Second, JobTimeout: 5 * time.Minute, MaxAttempts: serviceMaxAttempts}, func(ctx context.Context, j jobs.Job, b []byte) error { return serviceProcess(ctx, c, j, b, os.Stderr) })
 	}()
 	defer func() {
 		cancelWorker()
@@ -515,7 +547,9 @@ func processEvent(ctx context.Context, c serverConfig, j jobs.Job, b []byte) err
 		return errors.New("repository has no trusted local mapping")
 	}
 	if event.CommentID == "" && event.Branch != o.Branch {
-		return errors.New("event targets an unconfigured branch")
+		// Pushes to and changes into other branches are expected
+		// deliveries, not failures: acknowledge them and do nothing.
+		return nil
 	}
 	forge := o.forge
 	if forge == nil && o.ForgeConfig != "" {
@@ -590,6 +624,33 @@ func processEvent(ctx context.Context, c serverConfig, j jobs.Job, b []byte) err
 		return e
 	}
 	return saveAndAnnounce(ctx, c.State, "review", r)
+}
+
+// serviceProcess runs one durable job and logs a failure as one line: job
+// ID, kind, change, attempt and, once the change was captured, the run ID
+// and reason a status comment names. Errors carry no credentials or
+// provider bodies; control characters are removed and the text is capped.
+func serviceProcess(ctx context.Context, c serverConfig, j jobs.Job, b []byte, log io.Writer) error {
+	e := processEvent(ctx, c, j, b)
+	if e == nil {
+		return nil
+	}
+	line := fmt.Sprintf("job %s failed (kind %s, change %s, attempt %d/%d)", j.ID, j.Kind, j.ChangeID, j.Attempts, serviceMaxAttempts)
+	var f *reviewFailure
+	if errors.As(e, &f) {
+		line += fmt.Sprintf(": run %s, reason %s", f.RunID, f.Reason)
+	}
+	msg := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, e.Error())
+	if len(msg) > 300 {
+		msg = strings.ToValidUTF8(msg[:300], "") + "..."
+	}
+	fmt.Fprintf(log, "%s: %s\n", line, msg)
+	return e
 }
 
 func ingestEvent(ctx context.Context, c serverConfig, o repositoryConfig, event worker.Event) error {
