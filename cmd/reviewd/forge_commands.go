@@ -76,6 +76,11 @@ type forgeConfig struct {
 
 	// Set only when compiled from changeharbor.yaml.
 	name, response, modelConfig string
+	// GitHub App authentication (appID empty: token_env) and mirror
+	// transport. They are credentials and transport, not review identity.
+	appID, appKeyEnv, installationID, appSlug string
+	mirrorAuth, mirrorURL                     string
+	mirrorAuto                                bool
 }
 
 // pathInstruction applies Instructions when a changed file matches Paths.
@@ -233,20 +238,15 @@ func changeURL(c forgeConfig, number int) string {
 }
 
 // syncMirror fetches the target branch and the change head from the
-// configured mirror remote. It is a no-op without sync_remote.
+// configured mirror remote or mirror.url. It is a no-op without a sync
+// source.
 func syncMirror(ctx context.Context, c forgeConfig, number int) error {
-	if c.SyncRemote == "" {
-		return nil
-	}
 	head := fmt.Sprintf("+refs/merge-requests/%d/head:refs/merge-requests/%d/head", number, number)
 	if c.Provider == "github" {
 		head = fmt.Sprintf("+refs/pull/%d/head:refs/pull/%d/head", number, number)
 	}
 	branch := "+refs/heads/" + c.Branch + ":refs/heads/" + c.Branch
-	if e := (gitreader.Reader{Repo: c.RepoPath}).Fetch(ctx, c.SyncRemote, branch, head); e != nil {
-		return fmt.Errorf("mirror sync from %q failed: %w", c.SyncRemote, e)
-	}
-	return nil
+	return fetchMirror(ctx, c, branch, head)
 }
 
 func gitlabClient(c forgeConfig) *gl.Client {
@@ -305,13 +305,12 @@ func captureForge(ctx context.Context, c forgeConfig, raw string) (forgeCapture,
 	if e != nil {
 		return forgeCapture{}, e
 	}
-	token := os.Getenv(c.TokenEnv)
-	if c.TokenEnv != "" && token == "" {
+	if c.appID == "" && c.TokenEnv != "" && os.Getenv(c.TokenEnv) == "" {
 		return forgeCapture{}, errors.New("forge credential unavailable")
 	}
 	out := forgeCapture{Provider: c.Provider, URL: raw, Number: n}
 	if c.Provider == "github" {
-		x, e := gh.NewClient(c.APIBase, token, nil, 1<<20).Change(ctx, c.Owner, c.Repository, n)
+		x, e := githubClient(c).Change(ctx, c.Owner, c.Repository, n)
 		if e != nil {
 			return out, e
 		}
@@ -715,7 +714,7 @@ type githubPublication struct {
 }
 
 func (g *githubPublication) client() *gh.Client {
-	return gh.NewClient(g.c.APIBase, os.Getenv(g.c.TokenEnv), nil, 1<<20)
+	return githubClient(g.c)
 }
 func (g *githubPublication) withheldReason() string { return g.reason }
 func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, error) {
@@ -1148,7 +1147,7 @@ func (f *forgeComments) List(ctx context.Context) ([]publish.RemoteComment, erro
 }
 
 func (f *forgeComments) github() *gh.Client {
-	return gh.NewClient(f.c.APIBase, os.Getenv(f.c.TokenEnv), nil, 1<<20)
+	return githubClient(f.c)
 }
 
 func (f *forgeComments) Create(ctx context.Context, body string) (publish.RemoteComment, error) {
@@ -1306,7 +1305,7 @@ func liveChange(ctx context.Context, c forgeConfig, n int) (open bool, head, tar
 		ch, e := gitlabClient(c).Change(ctx, c.ProjectID, n)
 		return ch.State == "opened", ch.HeadOID, ch.TargetOID, e
 	}
-	ch, e := gh.NewClient(c.APIBase, os.Getenv(c.TokenEnv), nil, 1<<20).Change(ctx, c.Owner, c.Repository, n)
+	ch, e := githubClient(c).Change(ctx, c.Owner, c.Repository, n)
 	return ch.State != "closed", ch.HeadOID, ch.TargetOID, e
 }
 
@@ -1321,7 +1320,7 @@ func withdrawApproval(ctx context.Context, c forgeConfig, n int, a activeApprova
 	if a.RemoteID == "" {
 		return nil
 	}
-	return gh.NewClient(c.APIBase, os.Getenv(c.TokenEnv), nil, 1<<20).DismissReview(ctx, c.Owner, c.Repository, n, a.RemoteID,
+	return githubClient(c).DismissReview(ctx, c.Owner, c.Repository, n, a.RemoteID,
 		"ChangeHarbor: the reviewed commit or target changed; this approval no longer applies.")
 }
 
@@ -1373,10 +1372,8 @@ func doctorRun(ctx context.Context, c forgeConfig) (doctorReport, error) {
 		return doctorReport{}, e
 	}
 	mirror := gl.Check{Name: "mirror", OK: true, Detail: "branch " + c.Branch + " resolves in " + c.RepoPath}
-	if c.SyncRemote != "" {
-		if err := (gitreader.Reader{Repo: c.RepoPath}).Fetch(ctx, c.SyncRemote, "+refs/heads/"+c.Branch+":refs/heads/"+c.Branch); err != nil {
-			mirror = gl.Check{Name: "mirror", Severity: "error", Detail: "sync from " + c.SyncRemote + " failed: " + err.Error()}
-		}
+	if err := fetchMirror(ctx, c, "+refs/heads/"+c.Branch+":refs/heads/"+c.Branch); err != nil {
+		mirror = gl.Check{Name: "mirror", Severity: "error", Detail: err.Error()}
 	}
 	if mirror.OK {
 		if _, err := (gitreader.Reader{Repo: c.RepoPath}).Resolve(ctx, c.Branch); err != nil {

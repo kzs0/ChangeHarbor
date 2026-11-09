@@ -248,6 +248,14 @@ func (u unifiedConfig) compile(name string) (forgeConfig, map[string]string, err
 	if r.BotUserID != "" {
 		src["bot_user_id"] = "file"
 	}
+	c.mirrorAuth, c.mirrorURL, c.mirrorAuto = r.Mirror.Auth, r.MirrorURL(), r.Mirror.Sync == "auto"
+	if app := r.App(); app != nil {
+		c.appID, c.appKeyEnv, c.installationID, c.appSlug = app.AppID, app.PrivateKeyEnv, l.InstallationID, l.AppSlug
+		src["github_installation_id"] = "lock"
+		if app.InstallationID != "" {
+			src["github_installation_id"] = "file"
+		}
+	}
 	switch r.Mirror.Sync {
 	case "auto":
 		if (gitreader.Reader{Repo: r.Mirror.Path}).HasRemote(context.Background(), "origin") {
@@ -308,7 +316,13 @@ func (c forgeConfig) effective() map[string]any {
 		"instructions":        c.Instructions,
 		"path_instructions":   c.PathInstructions,
 		"exclude":             c.Exclude,
-		"protections":         map[string]string{"": "required", "required": "required", "advisory": "advisory"}[c.Protections]}
+		"protections":         map[string]string{"": "required", "required": "required", "advisory": "advisory"}[c.Protections],
+		"auth":                "token",
+		"mirror_auth":         cmp.Or(c.mirrorAuth, "none"),
+		"mirror_url":          c.mirrorURL}
+	if c.appID != "" {
+		out["auth"], out["github_app_id"], out["github_installation_id"] = "github_app", c.appID, c.installationID
+	}
 	if c.Provider == "gitlab" {
 		jobs := []string{}
 		for j := range c.RequiredChecks {
@@ -415,9 +429,9 @@ func resolveLock(ctx context.Context, path string) (config.Lock, error) {
 			return lock, e
 		}
 		entry := config.LockedRepository{Inputs: s.LockInputs(name), BotUserID: r.BotUserID}
-		token := os.Getenv(r.TokenEnv)
 		at := "repositories." + name
 		if r.Provider == "gitlab" {
+			token := os.Getenv(r.TokenEnv)
 			c := gl.NewClient(ep.APIBase, token, nil, 1<<20)
 			if r.TokenScheme == "bearer" {
 				c = gl.NewBearerClient(ep.APIBase, token, nil, 1<<20)
@@ -440,7 +454,27 @@ func resolveLock(ctx context.Context, path string) (config.Lock, error) {
 				}
 			}
 		} else {
-			c := gh.NewClient(ep.APIBase, token, nil, 1<<20)
+			c := gh.NewClient(ep.APIBase, os.Getenv(r.TokenEnv), nil, 1<<20)
+			if app := r.App(); app != nil {
+				// The JWT is used only for /app and the installation
+				// lookup; everything else uses the installation token.
+				key, e := loadAppKey(app.PrivateKeyEnv)
+				if e != nil {
+					return lock, fmt.Errorf("%s.github.app.private_key_env: %w", at, e)
+				}
+				a := &gh.App{BaseURL: ep.APIBase, AppID: app.AppID, Key: key}
+				id, e := a.Identity(ctx)
+				if e != nil {
+					return lock, fmt.Errorf("%s.github.app: %w", at, e)
+				}
+				entry.AppSlug, entry.InstallationID = id.Slug, app.InstallationID
+				if entry.InstallationID == "" {
+					if entry.InstallationID, e = a.Installation(ctx, ep.Owner, ep.Path); e != nil {
+						return lock, fmt.Errorf("%s.github.app: resolving installation: %w", at, e)
+					}
+				}
+				c = gh.NewClientWithTokenSource(ep.APIBase, a.TokenSource(entry.InstallationID, ep.Path), nil, 1<<20)
+			}
 			repo, e := c.Repository(ctx, ep.Owner, ep.Path)
 			if e != nil {
 				return lock, fmt.Errorf("%s: resolving %s/%s: %w", at, ep.Owner, ep.Path, e)
@@ -454,9 +488,16 @@ func resolveLock(ctx context.Context, path string) (config.Lock, error) {
 				}
 				entry.SourceRepositoryID = fork.ID
 			}
-			if entry.BotUserID == "" {
-				// App installation tokens cannot call /user; comments then
-				// require an explicit bot_user_id.
+			switch {
+			case entry.BotUserID != "":
+			case entry.AppSlug != "":
+				// Installation tokens cannot call /user; the App acts as
+				// its bot user.
+				if entry.BotUserID, e = c.UserID(ctx, gh.BotLogin(entry.AppSlug)); e != nil {
+					return lock, fmt.Errorf("%s: resolving GitHub App bot user: %w", at, e)
+				}
+			default:
+				// Comments then require an explicit bot_user_id.
 				entry.BotUserID, _ = c.CurrentUser(ctx)
 			}
 		}
