@@ -334,6 +334,10 @@ type InlineRequest struct {
 	// Present lists fingerprints the review still reports but that can't be
 	// placed on the forge's diff: their existing comments are not outdated.
 	Present []string
+	// KeepAbsent leaves every owned comment the review no longer reports as
+	// it is: set for partial reviews, where an unreviewed file says nothing
+	// about its earlier comments.
+	KeepAbsent bool
 }
 
 // InlinePublication is the audited result. Created, Kept, MarkedOutdated and
@@ -413,6 +417,9 @@ func (s *InlineService) Publish(ctx context.Context, r InlineRequest) (InlinePub
 		return p, e
 	}
 	plan := PlanInline(r.ChangeKey, r.BotID, r.Targets, existing)
+	if r.KeepAbsent {
+		plan.MarkOutdated, plan.markedFP = nil, nil
+	}
 	if len(r.Present) > 0 {
 		present := map[string]bool{}
 		for _, fp := range r.Present {

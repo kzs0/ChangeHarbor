@@ -94,6 +94,14 @@ validates the response. A refusal or a truncated response is invalid output.
 Rate-limit and overload responses (429, 503, 529) are retried within
 `max_attempts`.
 
+The largest diff a review can send is derived from these limits: the request
+byte cap, the context window less `max_output_tokens`, `max_total_tokens`
+split across attempts, and the cost cap. A change too large for it is not
+reviewed (see `review.large_changes` in the
+[reference](reference.md#review)). `reviewd review --url --max-bytes N` lowers
+the budget further; with a saved `response` the budget is `--max-bytes`, or
+1 MiB.
+
 Every request, attempt and response is recorded in the state directory. If a
 response is lost, ChangeHarbor never silently replays the request.
 

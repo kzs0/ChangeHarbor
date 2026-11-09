@@ -423,3 +423,71 @@ func (c *Client) UpdateReviewComment(ctx context.Context, owner, repo, id, body 
 	}
 	return w.comment()
 }
+
+// positiveID reports whether id is a canonical positive decimal number.
+func positiveID(id string) bool {
+	n, err := strconv.ParseInt(id, 10, 64)
+	return err == nil && n > 0 && strconv.FormatInt(n, 10) == id
+}
+
+// IssueComment is the API's copy of a comment on an issue or pull request.
+// Body is untrusted.
+type IssueComment struct {
+	ID, Body, AuthorID, AuthorLogin, AuthorAssociation string
+	IssueNumber                                        int
+}
+
+// IssueComment reads one issue comment by ID.
+func (c *Client) IssueComment(ctx context.Context, owner, repo, id string) (IssueComment, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return IssueComment{}, e
+	}
+	if !positiveID(id) {
+		return IssueComment{}, errors.New("invalid comment ID")
+	}
+	var x struct {
+		ID       int64  `json:"id"`
+		Body     string `json:"body"`
+		IssueURL string `json:"issue_url"`
+		User     struct {
+			ID    int64  `json:"id"`
+			Login string `json:"login"`
+		} `json:"user"`
+		AuthorAssociation string `json:"author_association"`
+	}
+	if e = c.request(ctx, "GET", p+"/issues/comments/"+id, nil, &x); e != nil {
+		return IssueComment{}, e
+	}
+	if fmt.Sprint(x.ID) != id || x.User.ID <= 0 {
+		return IssueComment{}, errors.New("invalid comment identity")
+	}
+	i := strings.LastIndex(x.IssueURL, "/issues/")
+	if i < 0 || !strings.HasSuffix(strings.ToLower(x.IssueURL[:i]), strings.ToLower(p)) {
+		return IssueComment{}, errors.New("comment is not on an issue of this repository")
+	}
+	n, err := strconv.Atoi(x.IssueURL[i+len("/issues/"):])
+	if err != nil || n <= 0 {
+		return IssueComment{}, errors.New("comment is not on an issue of this repository")
+	}
+	return IssueComment{ID: id, Body: x.Body, AuthorID: fmt.Sprint(x.User.ID), AuthorLogin: x.User.Login, AuthorAssociation: x.AuthorAssociation, IssueNumber: n}, nil
+}
+
+// User is the token's user.
+type User struct{ ID, Username string }
+
+// Me returns the token's user ID and login. GitHub App installation tokens
+// cannot call this endpoint.
+func (c *Client) Me(ctx context.Context) (User, error) {
+	var x struct {
+		ID    int64  `json:"id"`
+		Login string `json:"login"`
+	}
+	if e := c.request(ctx, "GET", "/user", nil, &x); e != nil {
+		return User{}, e
+	}
+	if x.ID <= 0 || x.Login == "" {
+		return User{}, errors.New("missing GitHub user identity")
+	}
+	return User{ID: fmt.Sprint(x.ID), Username: x.Login}, nil
+}

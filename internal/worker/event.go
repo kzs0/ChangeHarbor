@@ -14,6 +14,10 @@ import (
 type Event struct {
 	Provider, RepositoryID, Head, Target, Branch, Kind string
 	ChangeNumber                                       int
+	// CommentID is set for review command jobs: the comment (GitHub) or
+	// note (GitLab) to read from the API. Head, Target and Branch are then
+	// empty; the change's facts come from the API.
+	CommentID string
 }
 
 func EventFromJob(j jobs.Job, b []byte) (Event, error) {
@@ -30,8 +34,18 @@ func EventFromJob(j jobs.Job, b []byte) (Event, error) {
 			Base           struct{ SHA, Ref string }
 			MergeCommitSHA string `json:"merge_commit_sha"`
 		} `json:"pull_request"`
-		Project    struct{ ID int64 }
-		Attributes struct {
+		Issue *struct {
+			Number int
+		} `json:"issue"`
+		Comment *struct {
+			ID int64
+		} `json:"comment"`
+		ObjectKind   string             `json:"object_kind"`
+		MergeRequest *struct{ IID int } `json:"merge_request"`
+		Project      struct{ ID int64 }
+		Attributes   struct {
+			ID             int64
+			NoteableType   string `json:"noteable_type"`
 			IID            int
 			TargetBranch   string              `json:"target_branch"`
 			LastCommit     struct{ ID string } `json:"last_commit"`
@@ -42,6 +56,20 @@ func EventFromJob(j jobs.Job, b []byte) (Event, error) {
 		return Event{}, e
 	}
 	e := Event{Provider: provider, Kind: j.Kind}
+	if j.Kind == "review" && provider == "github" && x.Comment != nil {
+		if x.Repository.ID <= 0 || x.Issue == nil || x.Issue.Number <= 0 || x.Comment.ID <= 0 {
+			return Event{}, errors.New("receipt has insufficient comment routing facts")
+		}
+		e.RepositoryID, e.ChangeNumber, e.CommentID = fmt.Sprint(x.Repository.ID), x.Issue.Number, fmt.Sprint(x.Comment.ID)
+		return e, nil
+	}
+	if j.Kind == "review" && provider == "gitlab" && (x.ObjectKind == "note" || x.Attributes.NoteableType != "") {
+		if x.Project.ID <= 0 || x.MergeRequest == nil || x.MergeRequest.IID <= 0 || x.Attributes.ID <= 0 {
+			return Event{}, errors.New("receipt has insufficient comment routing facts")
+		}
+		e.RepositoryID, e.ChangeNumber, e.CommentID = fmt.Sprint(x.Project.ID), x.MergeRequest.IID, fmt.Sprint(x.Attributes.ID)
+		return e, nil
+	}
 	if provider == "github" {
 		e.RepositoryID = fmt.Sprint(x.Repository.ID)
 		e.ChangeNumber = x.Number

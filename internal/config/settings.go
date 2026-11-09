@@ -45,6 +45,7 @@ type RepositorySettings struct {
 	TokenEnv    string           `json:"token_env"`
 	TokenScheme string           `json:"token_scheme,omitempty"`
 	BotUserID   string           `json:"bot_user_id,omitempty"`
+	BotUsername string           `json:"bot_username,omitempty"`
 	ForkSource  string           `json:"fork_source,omitempty"`
 	Mirror      MirrorSettings   `json:"mirror"`
 	Branch      string           `json:"branch,omitempty"`
@@ -87,6 +88,61 @@ type ReviewSettings struct {
 	Instructions     string            `json:"instructions,omitempty"`
 	PathInstructions []PathInstruction `json:"path_instructions,omitempty"`
 	Exclude          []string          `json:"exclude,omitempty"`
+	// LargeChanges is what to do when the diff doesn't fit the model's
+	// request budget: incomplete (no review) or partial (review the files
+	// that fit). It changes what the model sees, so it is review identity.
+	LargeChanges string `json:"large_changes,omitempty"`
+	// Auto decides whether the service starts a review automatically. It is
+	// not review identity.
+	Auto *AutoReviewSettings `json:"auto,omitempty"`
+}
+
+// AutoReviewSettings are the service's automatic review trigger controls.
+type AutoReviewSettings struct {
+	Drafts            string   `json:"drafts,omitempty"`
+	IgnoreAuthors     []string `json:"ignore_authors,omitempty"`
+	SkipLabels        []string `json:"skip_labels,omitempty"`
+	SkipTitleKeywords []string `json:"skip_title_keywords,omitempty"`
+}
+
+var (
+	authorPattern = regexp.MustCompile(`^[A-Za-z0-9*][A-Za-z0-9_.*\[\]-]*$`)
+	usernameRE    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(\[bot\])?$`)
+)
+
+// ValidAuthorPattern reports whether p is a usable review.auto.ignore_authors
+// pattern.
+func ValidAuthorPattern(p string) bool { return len(p) <= 255 && authorPattern.MatchString(p) }
+
+// ValidBotUsername reports whether u is a usable bot username.
+func ValidBotUsername(u string) bool { return len(u) <= 255 && usernameRE.MatchString(u) }
+
+// Validate checks automatic review settings; at prefixes error paths.
+func (a *AutoReviewSettings) Validate(at string) error {
+	if a == nil {
+		return nil
+	}
+	if a.Drafts != "" {
+		if e := enum(at+".drafts", a.Drafts, "skip", "review"); e != nil {
+			return e
+		}
+	}
+	for i, p := range a.IgnoreAuthors {
+		if !ValidAuthorPattern(p) {
+			return fmt.Errorf("%s.ignore_authors[%d]: invalid author pattern", at, i)
+		}
+	}
+	for i, l := range a.SkipLabels {
+		if l == "" {
+			return fmt.Errorf("%s.skip_labels[%d]: empty value", at, i)
+		}
+	}
+	for i, k := range a.SkipTitleKeywords {
+		if k == "" {
+			return fmt.Errorf("%s.skip_title_keywords[%d]: empty value", at, i)
+		}
+	}
+	return nil
 }
 
 // PathInstruction applies Instructions when a changed file matches Paths.
@@ -107,6 +163,14 @@ func validGlob(pattern string) bool {
 func (r *ReviewSettings) Validate(at string) error {
 	if r == nil {
 		return nil
+	}
+	if r.LargeChanges != "" {
+		if e := enum(at+".large_changes", r.LargeChanges, "incomplete", "partial"); e != nil {
+			return e
+		}
+	}
+	if e := r.Auto.Validate(at + ".auto"); e != nil {
+		return e
 	}
 	size := len(r.Instructions)
 	for i, g := range r.Exclude {
@@ -349,6 +413,9 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 		if r.BotUserID != "" && !numericID.MatchString(r.BotUserID) {
 			return fmt.Errorf("%s.bot_user_id: must be a numeric user ID", p)
 		}
+		if r.BotUsername != "" && !ValidBotUsername(r.BotUsername) {
+			return fmt.Errorf("%s.bot_username: invalid username", p)
+		}
 		if r.ForkSource != "" {
 			parts := strings.Split(r.ForkSource, "/")
 			ok := len(parts) >= 2 && (r.Provider == "gitlab" || len(parts) == 2)
@@ -438,6 +505,14 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 		if e := r.Review.Validate(p + ".review"); e != nil {
 			return e
 		}
+		if r.Review == nil {
+			r.Review = &ReviewSettings{}
+		}
+		set("review.large_changes", "incomplete", &r.Review.LargeChanges)
+		if r.Review.Auto == nil {
+			r.Review.Auto = &AutoReviewSettings{}
+		}
+		set("review.auto.drafts", "skip", &r.Review.Auto.Drafts)
 		set("publish.protections", "required", &r.Publish.Protections)
 		if e := enum(p+".publish.protections", r.Publish.Protections, "required", "advisory"); e != nil {
 			return e
@@ -555,12 +630,13 @@ func (r RepositorySettings) Endpoint() (Endpoint, error) {
 // LockInputs are the settings a lock entry was resolved from; any change
 // makes the entry stale.
 type LockInputs struct {
-	URL        string `json:"url"`
-	Provider   string `json:"provider"`
-	APIURL     string `json:"api_url,omitempty"`
-	ForkSource string `json:"fork_source,omitempty"`
-	TokenEnv   string `json:"token_env"`
-	BotUserID  string `json:"bot_user_id,omitempty"`
+	URL         string `json:"url"`
+	Provider    string `json:"provider"`
+	APIURL      string `json:"api_url,omitempty"`
+	ForkSource  string `json:"fork_source,omitempty"`
+	TokenEnv    string `json:"token_env"`
+	BotUserID   string `json:"bot_user_id,omitempty"`
+	BotUsername string `json:"bot_username,omitempty"`
 	// GitHub App settings; empty for token repositories.
 	GitHubAppID             string `json:"github_app_id,omitempty"`
 	GitHubAppPrivateKeyEnv  string `json:"github_app_private_key_env,omitempty"`
@@ -573,6 +649,7 @@ type LockedRepository struct {
 	SourceRepositoryID string     `json:"source_repository_id"`
 	DefaultBranch      string     `json:"default_branch"`
 	BotUserID          string     `json:"bot_user_id,omitempty"`
+	BotUsername        string     `json:"bot_username,omitempty"`
 	// InstallationID and AppSlug are resolved for GitHub App repositories.
 	InstallationID string `json:"installation_id,omitempty"`
 	AppSlug        string `json:"app_slug,omitempty"`
@@ -586,7 +663,7 @@ type Lock struct {
 
 func (s Settings) LockInputs(name string) LockInputs {
 	r := s.Repositories[name]
-	in := LockInputs{URL: r.URL, Provider: r.Provider, APIURL: r.APIURL, ForkSource: r.ForkSource, TokenEnv: r.TokenEnv, BotUserID: r.BotUserID}
+	in := LockInputs{URL: r.URL, Provider: r.Provider, APIURL: r.APIURL, ForkSource: r.ForkSource, TokenEnv: r.TokenEnv, BotUserID: r.BotUserID, BotUsername: r.BotUsername}
 	if app := r.App(); app != nil {
 		in.GitHubAppID, in.GitHubAppPrivateKeyEnv, in.GitHubAppInstallationID = app.AppID, app.PrivateKeyEnv, app.InstallationID
 	}
@@ -617,6 +694,7 @@ func (l Lock) Check(s Settings) error {
 			return fmt.Errorf("repositories.%s: lock is stale (%s changed); run reviewd config resolve", n, strings.Join(changed, ", "))
 		}
 		if !numericID.MatchString(entry.RepositoryID) || !numericID.MatchString(entry.SourceRepositoryID) || entry.DefaultBranch == "" || (entry.BotUserID != "" && !numericID.MatchString(entry.BotUserID)) ||
+			(entry.BotUsername != "" && !ValidBotUsername(entry.BotUsername)) ||
 			(s.Repositories[n].App() != nil && !numericID.MatchString(entry.InstallationID)) {
 			return fmt.Errorf("repositories.%s: invalid lock entry; run reviewd config resolve", n)
 		}

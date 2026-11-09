@@ -17,3 +17,8 @@ local Generation to accepted newer/tied deliveries. Older provider times are
 superseded; duplicate receipts do not allocate generations. Claimed Generation is
 local and must never be interpreted as a timestamp. Same-second remote ordering
 is unprovable from event time; resolve live head again before capture/publication.
+
+Forced jobs: `Job.Force` marks a review a person asked for (a review command).
+A forced review job is never superseded, whether a newer generation arrives
+later or it arrives older than the current one; it still supersedes older
+unforced review jobs. Duplicate deliveries must agree on `Force`.

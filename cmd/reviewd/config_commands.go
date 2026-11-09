@@ -244,6 +244,14 @@ func (u unifiedConfig) compile(name string) (forgeConfig, map[string]string, err
 		for _, pi := range r.Review.PathInstructions {
 			c.PathInstructions = append(c.PathInstructions, pathInstruction{Paths: pi.Paths, Instructions: pi.Instructions})
 		}
+		c.LargeChanges = r.Review.LargeChanges
+		if a := r.Review.Auto; a != nil {
+			c.AutoDrafts, c.AutoIgnoreAuthors, c.AutoSkipLabels, c.AutoSkipTitleKeywords = a.Drafts, a.IgnoreAuthors, a.SkipLabels, a.SkipTitleKeywords
+		}
+	}
+	c.BotUsername, src["bot_username"] = l.BotUsername, "lock"
+	if r.BotUsername != "" {
+		c.BotUsername, src["bot_username"] = r.BotUsername, "file"
 	}
 	if r.BotUserID != "" {
 		src["bot_user_id"] = "file"
@@ -308,18 +316,24 @@ func (c forgeConfig) effective() map[string]any {
 	out := map[string]any{"provider": c.Provider, "web_base": c.WebBase, "api_base": c.APIBase, "repository": strings.Trim(c.Owner+"/"+c.Repository, "/"),
 		"repository_id": c.RepositoryID, "source_repository_id": c.SourceRepositoryID, "branch": c.Branch, "mirror": c.RepoPath, "sync_remote": c.SyncRemote,
 		"policy": c.PolicyFile, "model": c.modelConfig, "response": c.response, "token_env": c.TokenEnv, "bot_user_id": c.BotUserID,
-		"approvals":           map[string]string{"off": "off", "evaluate": "shadow", "submit": "submit", "": "off", "shadow": "off"}[c.Mode],
-		"comments":            map[string]string{"off": "off", "": "shadow", "post": "post"}[c.CommentMode],
-		"inline_comments":     map[string]string{"off": "off", "": "shadow", "post": "post"}[c.InlineCommentMode],
-		"suggestions":         map[string]string{"": "include", "include": "include", "off": "off"}[c.Suggestions],
-		"inline_min_severity": cmp.Or(c.InlineMinSeverity, "low"),
-		"instructions":        c.Instructions,
-		"path_instructions":   c.PathInstructions,
-		"exclude":             c.Exclude,
-		"protections":         map[string]string{"": "required", "required": "required", "advisory": "advisory"}[c.Protections],
-		"auth":                "token",
-		"mirror_auth":         cmp.Or(c.mirrorAuth, "none"),
-		"mirror_url":          c.mirrorURL}
+		"approvals":                map[string]string{"off": "off", "evaluate": "shadow", "submit": "submit", "": "off", "shadow": "off"}[c.Mode],
+		"comments":                 map[string]string{"off": "off", "": "shadow", "post": "post"}[c.CommentMode],
+		"inline_comments":          map[string]string{"off": "off", "": "shadow", "post": "post"}[c.InlineCommentMode],
+		"suggestions":              map[string]string{"": "include", "include": "include", "off": "off"}[c.Suggestions],
+		"inline_min_severity":      cmp.Or(c.InlineMinSeverity, "low"),
+		"instructions":             c.Instructions,
+		"path_instructions":        c.PathInstructions,
+		"exclude":                  c.Exclude,
+		"protections":              map[string]string{"": "required", "required": "required", "advisory": "advisory"}[c.Protections],
+		"auth":                     "token",
+		"mirror_auth":              cmp.Or(c.mirrorAuth, "none"),
+		"mirror_url":               c.mirrorURL,
+		"large_changes":            cmp.Or(c.LargeChanges, "incomplete"),
+		"auto_drafts":              cmp.Or(c.AutoDrafts, "skip"),
+		"auto_ignore_authors":      nonNil(c.AutoIgnoreAuthors),
+		"auto_skip_labels":         nonNil(c.AutoSkipLabels),
+		"auto_skip_title_keywords": nonNil(c.AutoSkipTitleKeywords),
+		"bot_username":             c.BotUsername}
 	if c.appID != "" {
 		out["auth"], out["github_app_id"], out["github_installation_id"] = "github_app", c.appID, c.installationID
 	}
@@ -344,10 +358,17 @@ func (c forgeConfig) effective() map[string]any {
 	return out
 }
 
+func nonNil(xs []string) []string {
+	if xs == nil {
+		return []string{}
+	}
+	return xs
+}
+
 // Keys whose change alters review identity and therefore invalidates
 // existing reviews.
 var reviewInvalidating = []string{"url", "provider", "api_url", "fork_source", "mirror.path", "policy", "branch",
-	"review.instructions", "review.path_instructions", "review.exclude"}
+	"review.instructions", "review.path_instructions", "review.exclude", "review.large_changes"}
 
 type repoReport struct {
 	Effective          map[string]any
@@ -428,7 +449,7 @@ func resolveLock(ctx context.Context, path string) (config.Lock, error) {
 		if e != nil {
 			return lock, e
 		}
-		entry := config.LockedRepository{Inputs: s.LockInputs(name), BotUserID: r.BotUserID}
+		entry := config.LockedRepository{Inputs: s.LockInputs(name), BotUserID: r.BotUserID, BotUsername: r.BotUsername}
 		at := "repositories." + name
 		if r.Provider == "gitlab" {
 			token := os.Getenv(r.TokenEnv)
@@ -449,8 +470,13 @@ func resolveLock(ctx context.Context, path string) (config.Lock, error) {
 				entry.SourceRepositoryID = fork.ID
 			}
 			if entry.BotUserID == "" {
-				if entry.BotUserID, e = c.CurrentUser(ctx); e != nil {
+				u, e := c.Me(ctx)
+				if e != nil {
 					return lock, fmt.Errorf("%s: resolving bot user: %w", at, e)
+				}
+				entry.BotUserID = u.ID
+				if entry.BotUsername == "" && config.ValidBotUsername(u.Username) {
+					entry.BotUsername = u.Username
 				}
 			}
 		} else {
@@ -496,9 +522,17 @@ func resolveLock(ctx context.Context, path string) (config.Lock, error) {
 				if entry.BotUserID, e = c.UserID(ctx, gh.BotLogin(entry.AppSlug)); e != nil {
 					return lock, fmt.Errorf("%s: resolving GitHub App bot user: %w", at, e)
 				}
+				if entry.BotUsername == "" && config.ValidBotUsername(gh.BotLogin(entry.AppSlug)) {
+					entry.BotUsername = gh.BotLogin(entry.AppSlug)
+				}
 			default:
 				// Comments then require an explicit bot_user_id.
-				entry.BotUserID, _ = c.CurrentUser(ctx)
+				if u, e := c.Me(ctx); e == nil {
+					entry.BotUserID = u.ID
+					if entry.BotUsername == "" && config.ValidBotUsername(u.Username) {
+						entry.BotUsername = u.Username
+					}
+				}
 			}
 		}
 		lock.Repositories[name] = entry
@@ -667,8 +701,23 @@ func configMigrate(args []string) (int, error) {
 	if c.InlineMinSeverity != "" {
 		publishSettings["inline_min_severity"] = c.InlineMinSeverity
 	}
-	if c.Instructions != "" || len(c.PathInstructions) > 0 || len(c.Exclude) > 0 {
+	if c.Instructions != "" || len(c.PathInstructions) > 0 || len(c.Exclude) > 0 || c.LargeChanges != "" || c.AutoDrafts != "" || len(c.AutoIgnoreAuthors)+len(c.AutoSkipLabels)+len(c.AutoSkipTitleKeywords) > 0 {
 		reviewSettings := map[string]any{}
+		if c.LargeChanges != "" {
+			reviewSettings["large_changes"] = c.LargeChanges
+		}
+		auto := map[string]any{}
+		if c.AutoDrafts != "" {
+			auto["drafts"] = c.AutoDrafts
+		}
+		for k, v := range map[string][]string{"ignore_authors": c.AutoIgnoreAuthors, "skip_labels": c.AutoSkipLabels, "skip_title_keywords": c.AutoSkipTitleKeywords} {
+			if len(v) > 0 {
+				auto[k] = v
+			}
+		}
+		if len(auto) > 0 {
+			reviewSettings["auto"] = auto
+		}
 		if c.Instructions != "" {
 			reviewSettings["instructions"] = c.Instructions
 		}
@@ -682,6 +731,9 @@ func configMigrate(args []string) (int, error) {
 	}
 	if c.Protections != "" {
 		publishSettings["protections"] = c.Protections
+	}
+	if c.BotUsername != "" {
+		repo["bot_username"] = c.BotUsername
 	}
 	repo["publish"] = publishSettings
 	if c.Provider == "gitlab" {
@@ -749,7 +801,7 @@ func configMigrate(args []string) (int, error) {
 		return 2, fmt.Errorf("migrated configuration is invalid: %w", e)
 	}
 	lock := config.Lock{Version: 1, Repositories: map[string]config.LockedRepository{*name: {Inputs: settings.LockInputs(*name),
-		RepositoryID: c.RepositoryID, SourceRepositoryID: c.SourceRepositoryID, DefaultBranch: c.Branch, BotUserID: c.BotUserID}}}
+		RepositoryID: c.RepositoryID, SourceRepositoryID: c.SourceRepositoryID, DefaultBranch: c.Branch, BotUserID: c.BotUserID, BotUsername: c.BotUsername}}}
 	body, e := yaml.Marshal(doc)
 	if e != nil {
 		return 1, e

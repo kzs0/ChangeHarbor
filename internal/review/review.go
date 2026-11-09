@@ -19,7 +19,23 @@ type Input struct {
 	// Excluded lists files left out of the model's input by trusted policy.
 	// They are recorded in coverage and don't make it incomplete.
 	Excluded []string
+	// Files lists the kept diff's files in diff order. When set, coverage
+	// records each file, and Partial allows reviewing the files that fit
+	// when the whole diff doesn't.
+	Files   []FilePatch
+	Partial bool
 }
+
+// FilePatch is one file of the kept diff.
+type FilePatch struct{ OldPath, NewPath, Patch string }
+
+func (f FilePatch) path() string {
+	if f.NewPath != "" {
+		return f.NewPath
+	}
+	return f.OldPath
+}
+
 type Result struct {
 	Status                            string
 	Package                           contextpack.Package
@@ -46,9 +62,26 @@ func (e Engine) Run(ctx context.Context, i Input) (Result, error) {
 	if err != nil {
 		return r, err
 	}
-	for _, path := range i.Excluded {
-		p.Coverage = append(p.Coverage, contextpack.Entry{ID: "excluded:" + path, Status: "excluded_by_trusted_policy"})
+	fileStatus := make([]bool, len(i.Files))
+	if p.Complete {
+		for n := range fileStatus {
+			fileStatus[n] = true
+		}
 	}
+	files := func(p contextpack.Package, included []bool) contextpack.Package {
+		for n, f := range i.Files {
+			s := "not_included_budget"
+			if included[n] {
+				s = "included"
+			}
+			p.Coverage = append(p.Coverage, contextpack.Entry{ID: "file:" + f.path(), Status: s})
+		}
+		for _, path := range i.Excluded {
+			p.Coverage = append(p.Coverage, contextpack.Entry{ID: "excluded:" + path, Status: "excluded_by_trusted_policy"})
+		}
+		return p
+	}
+	p = files(p, fileStatus)
 	r.Package = p
 	if len(i.Excluded) > 0 && !reviewable(i.Items) {
 		// Trusted exclusions removed every changed file: nothing would be
@@ -73,10 +106,37 @@ func (e Engine) Run(ctx context.Context, i Input) (Result, error) {
 			return r, fmt.Errorf("evidence absent from input: %s", id)
 		}
 	}
+	partial := false
 	if !p.Complete {
-		r.Status = "input_incomplete"
-		r.Reasons = []string{"required_input_omitted"}
-		return r, nil
+		packed, included, ok, err := packFiles(ctx, i)
+		if err != nil {
+			return r, err
+		}
+		if !ok {
+			r.Status = "input_incomplete"
+			r.Reasons = []string{"required_input_omitted"}
+			return r, nil
+		}
+		partial = true
+		p = files(packed, included)
+		p.Complete = false
+		r.Package = p
+		known = map[string]bool{}
+		for _, c := range p.Coverage {
+			if c.Status == "included" {
+				known[c.ID] = true
+			}
+		}
+		kept := []git.Anchor{}
+		for _, a := range r.Anchors {
+			for n, f := range i.Files {
+				if included[n] && (a.Side == "old" && f.OldPath != "" && a.Path == f.OldPath || a.Side == "new" && f.NewPath != "" && a.Path == f.NewPath) {
+					kept = append(kept, a)
+					break
+				}
+			}
+		}
+		r.Anchors = kept
 	}
 	ids := []string{}
 	for _, id := range i.EvidenceIDs {
@@ -100,6 +160,14 @@ func (e Engine) Run(ctx context.Context, i Input) (Result, error) {
 	if err = validateAnchors(r.Review, r.Anchors); err != nil {
 		r.Status = "invalid_output"
 		r.Reasons = []string{err.Error()}
+		return r, nil
+	}
+	if partial {
+		// Some files were not reviewed: report-only, never approvable.
+		r.Status = "partial"
+		r.Reasons = []string{"files_omitted_for_size"}
+		r.EffectiveRisk = max(i.Minimum, r.Review.ModelMergeRisk)
+		r.Eligible = false
 		return r, nil
 	}
 	r.Status = "completed"
@@ -177,4 +245,70 @@ func reviewable(items []contextpack.Item) bool {
 		}
 	}
 	return true
+}
+
+// packFiles rebuilds the diff item from whole files, in diff order and
+// greedily, keeping every other required item. It reports ok=false when
+// partial review is off, another required item can't fit, or no file fits.
+func packFiles(ctx context.Context, i Input) (contextpack.Package, []bool, bool, error) {
+	included := make([]bool, len(i.Files))
+	diff := -1
+	for n, item := range i.Items {
+		if item.ID == "diff" {
+			diff = n
+		}
+	}
+	if !i.Partial || len(i.Files) == 0 || diff < 0 {
+		return contextpack.Package{}, included, false, nil
+	}
+	items := append([]contextpack.Item(nil), i.Items...)
+	required := func(content string) ([]contextpack.Item, int) {
+		out := []contextpack.Item{}
+		at := -1
+		for n, item := range items {
+			if !item.Required {
+				continue
+			}
+			if n == diff {
+				item.Content = content
+				at = len(out)
+			}
+			out = append(out, item)
+		}
+		return out, at
+	}
+	fits := func(content string) (bool, error) {
+		req, _ := required(content)
+		p, err := contextpack.Pack(ctx, req, i.Limits)
+		if err != nil {
+			return false, err
+		}
+		return p.Complete, nil
+	}
+	if ok, err := fits(""); err != nil || !ok {
+		return contextpack.Package{}, included, false, err
+	}
+	var b strings.Builder
+	fitted := false
+	for n, f := range i.Files {
+		candidate := b.String() + f.Patch
+		ok, err := fits(candidate)
+		if err != nil {
+			return contextpack.Package{}, included, false, err
+		}
+		if ok {
+			b.WriteString(f.Patch)
+			included[n] = true
+			fitted = true
+		}
+	}
+	if !fitted {
+		return contextpack.Package{}, included, false, nil
+	}
+	items[diff].Content = b.String()
+	p, err := contextpack.Pack(ctx, items, i.Limits)
+	if err != nil || !p.Complete {
+		return p, included, false, err
+	}
+	return p, included, true, nil
 }
