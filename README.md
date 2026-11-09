@@ -46,7 +46,10 @@ fixture mismatch, 4 incomplete scope/assessment.
 ## Live model and forge review
 
 Replace `--response` with `--model-config /trusted/model.json`. The HTTP adapter
-speaks OpenAI-compatible structured chat completions. Configure explicit model
+speaks OpenAI-compatible structured chat completions (`api: openai_chat`, the
+default) or the Anthropic Messages API (`api: anthropic_messages`); provider
+recipes are at https://kzs0.github.io/ChangeHarbor/configuration/providers/.
+Configure explicit model
 capabilities, token/byte/cost/deadline caps and a credential environment-variable
 name. Request intent, attempts, exact responses and usage are retained locally;
 uncertain completion is never silently replayed. Unknown usage/price remains

@@ -6,17 +6,16 @@ replace `your-model` with the model name your provider documents, and set the
 `capabilities` to what that model actually supports. ChangeHarbor doesn't
 look any of this up, so the numbers are yours to get right.
 
-Every provider must accept these two things, or reviews come back as
-`invalid_output`:
+The model has to support JSON-schema structured output. `openai_chat` asks
+for it with `response_format: {"type": "json_schema", ...}` (and caps the
+reply with `max_completion_tokens`); `anthropic_messages` uses
+`output_config.format`. The config won't load without
+`"structured_output": true`, so a model that can't do this can't be used.
 
-- **JSON-schema structured output.** `openai_chat` sends
-  `response_format: {"type": "json_schema", ...}` with `max_completion_tokens`;
-  `anthropic_messages` sends `output_config.format`. Set
-  `"structured_output": true` only for models that honour it.
-- **A normal finish.** A reply must end with `finish_reason: "stop"`
-  (`openai_chat`) or `stop_reason: "end_turn"` (`anthropic_messages`).
-  Anything else, including running out of output tokens, is treated as a
-  truncated reply.
+The reply also has to finish normally: `finish_reason: "stop"` for
+`openai_chat`, `stop_reason: "end_turn"` for `anthropic_messages`. Anything
+else, running out of output tokens included, counts as truncated, and the
+review comes back as `invalid_output`.
 
 The endpoint must be `https://`. Plain `http://` is accepted only for
 `localhost`, `127.0.0.1` and `::1`. Query strings aren't allowed in the

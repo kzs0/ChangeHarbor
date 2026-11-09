@@ -212,20 +212,25 @@ repositories:
       suggestions: include          # the default: one-click suggestion blocks
 ```
 
-- **Instructions** are added to the review prompt as trusted guidance. Path
-  instructions are added only when a changed file matches.
-- **Excluded files** (a good start: lockfiles, `vendor/**`, generated code)
-  never reach the model and can't get comments. They're listed in the summary,
-  and risk-policy minimums still count them.
-- **Suggestions** let reviewers apply a fix in one click. A suggestion
-  containing a line that starts with `/` is left out on GitLab, where that
-  line could run a quick action.
-- **Large changes** that don't fit the model's request budget aren't
-  reviewed: the summary comment says so and what to do. With
-  `review.large_changes: partial`, the files that fit are reviewed and the rest
-  are listed as not reviewed. Partial reviews are never approved.
-- Changing `review` (except `review.auto`) invalidates existing reviews; the
-  `publish` settings don't.
+Instructions go into the review prompt as trusted guidance. A path
+instruction is added only when a changed file matches one of its globs.
+
+Excluded files never reach the model and can't get comments. Lockfiles,
+`vendor/**` and generated code are a good start. They're still listed in the
+summary, and risk-policy minimums still count them, so excluding a file
+can't lower a change's risk.
+
+Suggestions let a reviewer apply a fix in one click. On GitLab, a suggestion
+with a line starting with `/` is left out, because that line could run a
+quick action.
+
+A change that doesn't fit the model's request budget isn't reviewed; the
+summary comment says so and what to do. With `review.large_changes: partial`
+the files that fit are reviewed and the rest are listed. Partial reviews are
+never approved.
+
+Changing anything under `review` except `review.auto` invalidates existing
+reviews. The `publish` settings don't.
 
 ## 11. Automate with webhooks
 
