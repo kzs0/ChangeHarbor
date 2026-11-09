@@ -88,4 +88,3 @@ func TestGitHubAppReviewCommandUsesInstallationToken(t *testing.T) {
 	}
 	a.assertNoSecrets()
 }
-

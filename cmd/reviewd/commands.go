@@ -22,7 +22,6 @@ import (
 	"github.com/kzs0/reviewd/internal/contextbuild"
 	"github.com/kzs0/reviewd/internal/contextpack"
 	"github.com/kzs0/reviewd/internal/evaluate"
-	gh "github.com/kzs0/reviewd/internal/forge/github"
 	gitreader "github.com/kzs0/reviewd/internal/git"
 	"github.com/kzs0/reviewd/internal/jobs"
 	"github.com/kzs0/reviewd/internal/journal"
@@ -682,7 +681,7 @@ func liveFacts(ctx context.Context, fc forgeConfig, number int) (changeFacts, st
 		ch, e := gitlabClient(fc).Change(ctx, fc.ProjectID, number)
 		return changeFacts{Draft: ch.Draft, Author: ch.Author, Title: ch.Title, Labels: ch.Labels}, ch.HeadOID, e
 	}
-	ch, e := gh.NewClient(fc.APIBase, os.Getenv(fc.TokenEnv), nil, 1<<20).Change(ctx, fc.Owner, fc.Repository, number)
+	ch, e := githubClient(fc).Change(ctx, fc.Owner, fc.Repository, number)
 	return changeFacts{Draft: ch.Draft, Author: ch.Author, Title: ch.Title, Labels: ch.Labels}, ch.HeadOID, e
 }
 
@@ -730,7 +729,7 @@ func commandRejection(ctx context.Context, fc forgeConfig, event worker.Event) (
 	var body, authorID, association string
 	level := 0
 	if fc.Provider == "github" {
-		x, e := gh.NewClient(fc.APIBase, os.Getenv(fc.TokenEnv), nil, 1<<20).IssueComment(ctx, fc.Owner, fc.Repository, event.CommentID)
+		x, e := githubClient(fc).IssueComment(ctx, fc.Owner, fc.Repository, event.CommentID)
 		if e != nil {
 			return "", e
 		}
@@ -777,7 +776,7 @@ func commandRejection(ctx context.Context, fc forgeConfig, event worker.Event) (
 		}
 		branch = ch.TargetBranch
 	} else {
-		ch, e := gh.NewClient(fc.APIBase, os.Getenv(fc.TokenEnv), nil, 1<<20).Change(ctx, fc.Owner, fc.Repository, event.ChangeNumber)
+		ch, e := githubClient(fc).Change(ctx, fc.Owner, fc.Repository, event.ChangeNumber)
 		if e != nil {
 			return "", e
 		}

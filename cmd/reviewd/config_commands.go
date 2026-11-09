@@ -522,9 +522,6 @@ func resolveLock(ctx context.Context, path string) (config.Lock, error) {
 				if entry.BotUserID, e = c.UserID(ctx, gh.BotLogin(entry.AppSlug)); e != nil {
 					return lock, fmt.Errorf("%s: resolving GitHub App bot user: %w", at, e)
 				}
-				if entry.BotUsername == "" && config.ValidBotUsername(gh.BotLogin(entry.AppSlug)) {
-					entry.BotUsername = gh.BotLogin(entry.AppSlug)
-				}
 			default:
 				// Comments then require an explicit bot_user_id.
 				if u, e := c.Me(ctx); e == nil {
@@ -533,6 +530,11 @@ func resolveLock(ctx context.Context, path string) (config.Lock, error) {
 						entry.BotUsername = u.Username
 					}
 				}
+			}
+			// An App comments as <slug>[bot], whether or not bot_user_id
+			// is set explicitly.
+			if entry.AppSlug != "" && entry.BotUsername == "" && config.ValidBotUsername(gh.BotLogin(entry.AppSlug)) {
+				entry.BotUsername = gh.BotLogin(entry.AppSlug)
 			}
 		}
 		lock.Repositories[name] = entry
