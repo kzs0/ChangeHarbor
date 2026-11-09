@@ -34,8 +34,12 @@ func (c *Client) request(ctx context.Context, method, path string, input, out an
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	auth, e := c.authorization(ctx)
+	if e != nil {
+		return e
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
 	}
 	hc := *c.http
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

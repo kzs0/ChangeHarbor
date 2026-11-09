@@ -18,6 +18,7 @@ type Client struct {
 	base, token string
 	http        *http.Client
 	max         int64
+	ts          TokenSource
 }
 
 func NewClient(baseURL, token string, httpClient *http.Client, maxBytes int64) *Client {
@@ -27,7 +28,7 @@ func NewClient(baseURL, token string, httpClient *http.Client, maxBytes int64) *
 	if maxBytes <= 0 {
 		maxBytes = 1 << 20
 	}
-	return &Client{strings.TrimRight(baseURL, "/"), token, httpClient, maxBytes}
+	return &Client{base: strings.TrimRight(baseURL, "/"), token: token, http: httpClient, max: maxBytes}
 }
 
 // Change is a pull request's identity. State is "open" or "closed" (empty
@@ -51,8 +52,12 @@ func (c *Client) Change(ctx context.Context, owner, repo string, number int) (Ch
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	auth, e := c.authorization(ctx)
+	if e != nil {
+		return Change{}, e
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
 	}
 	// Do not follow redirects with a credential or to an untrusted API host.
 	hc := *c.http
