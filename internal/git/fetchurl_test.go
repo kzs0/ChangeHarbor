@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -308,5 +309,29 @@ func TestCloneMirrorDoesNotRunHooks(t *testing.T) {
 	}
 	if _, e := os.Stat(marker); e == nil {
 		t.Fatal("hook executed during clone")
+	}
+}
+
+// The clone never uses a template directory, whichever configuration or
+// environment might name one: hooks and config could ride along.
+func TestCloneMirrorDisablesTemplates(t *testing.T) {
+	src := t.TempDir()
+	gitIn(t, src, "init", "-b", "main")
+	os.WriteFile(filepath.Join(src, "a"), []byte("1"), 0600)
+	gitIn(t, src, "add", "a")
+	gitIn(t, src, "commit", "-m", "1")
+	root := t.TempDir()
+	gitIn(t, root, "clone", "--bare", src, "acme/app.git")
+	srv, _ := smartHTTPServer(t, root, "", "")
+	rec := recordCommands(t)
+	if e := CloneMirror(context.Background(), HTTPAuth{URL: srv.URL + "/acme/app.git"}, filepath.Join(t.TempDir(), "app.git")); e != nil {
+		t.Fatal(e)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	for _, c := range rec.cmds {
+		if slices.Contains(c.Args, "clone") && !slices.Contains(c.Args, "--template=") {
+			t.Fatalf("clone without an empty template: %v", c.Args)
+		}
 	}
 }
