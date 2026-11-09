@@ -73,9 +73,9 @@ Under `repositories.<name>`:
 | `url` | required | Repository web URL. Provider, web/API bases and path are derived from it. |
 | `provider` | from host | `github` or `gitlab`. Needed only for self-managed hosts. |
 | `api_url` | derived | API base: `https://api.github.com`, `https://HOST/api/v3` (GitHub Enterprise) or `https://HOST/api/v4` (GitLab). Override for path-prefixed installs. |
-| `token_env` | required | Variable holding the forge token. |
+| `token_env` | required unless `github.app` | Variable holding the forge token. Set exactly one of `token_env` and `github.app`. |
 | `token_scheme` | `private-token` | GitLab only: `private-token` or `bearer`. |
-| `bot_user_id` | from the lock | The bot's numeric user ID. Resolved from `/user`; set it for GitHub App tokens. |
+| `bot_user_id` | from the lock | The bot's numeric user ID. Resolved from `/user`, or for a GitHub App from its `<slug>[bot]` user. |
 | `fork_source` | — | The one fork whose MRs/PRs are accepted, e.g. `contributors/app`. |
 | `branch` | default branch, pinned in the lock | Target branch reviews and approvals are for. |
 | `policy` | required | [Risk policy](policy.md) file. |
@@ -87,7 +87,9 @@ Under `repositories.<name>`:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `mirror.path` | required | Local git mirror. Source is read only from here. |
-| `mirror.sync` | `auto` | `auto` fetches from `origin` when the mirror has it; `none` never fetches; any other value names a remote configured in the mirror. |
+| `mirror.sync` | `auto` | `auto` fetches from `origin` when the mirror has it, and clones the mirror from `mirror.url` when `mirror.path` doesn't exist; `none` never fetches; any other value names a remote configured in the mirror. |
+| `mirror.auth` | `token` for a GitHub App with `sync: auto`, else `none` | `none`: git uses the mirror's own configuration for credentials. `token`: clone and fetch `mirror.url` with the repository's forge token (the App installation token or `token_env`), passed to git only through its environment, never in the URL, argv or on disk. Requires `sync: auto`. |
+| `mirror.url` | `url` + `.git` | Clone and fetch URL. https (loopback http allowed); no credentials, query or fragment. |
 
 ### `publish`
 
@@ -116,6 +118,10 @@ change or its target moves.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `github.required_checks` | — | Check name → ID of the GitHub App that must have produced it, e.g. `test: "15368"` (GitHub Actions). |
+| `github.app` | — | Authenticate as a GitHub App instead of `token_env`. See the [GitHub guide](../guides/github.md#github-app). |
+| `github.app.app_id` | required with `github.app` | Numeric App ID. |
+| `github.app.private_key_env` | required with `github.app` | Variable holding the App's PEM private key (PKCS#1 or PKCS#8 RSA). |
+| `github.app.installation_id` | resolved into the lock | Numeric installation ID. When omitted, `reviewd config resolve` looks it up. |
 
 ### `review`
 
@@ -166,13 +172,15 @@ unchanged: `url`, `provider`, `api_url`, `fork_source`, `mirror.path`, `policy`
 (and the policy file's contents, except `auto_approve_max`), `branch`, and
 everything under `review` (`review.instructions`, `review.path_instructions`,
 `review.exclude`).
-Everything under `publish`, `gitlab`, `github`, tokens and sync settings can
-change freely. `reviewd config check` lists the identity keys.
+Everything under `publish`, `gitlab`, `github`, tokens, `github.app` and mirror
+sync settings (`mirror.sync`, `mirror.auth`, `mirror.url`) can change freely:
+switching between a token and a GitHub App keeps existing reviews valid. `reviewd config check` lists the identity keys.
 
 ## The lock file
 
 `reviewd config resolve` writes `changeharbor.lock.yaml` next to the config
-with the IDs it looked up: repository and fork IDs, default branch and bot
-user. Commit it. It records the settings it was resolved from. If `url`,
-`provider`, `api_url`, `fork_source`, `token_env` or `bot_user_id` change,
+with the IDs it looked up: repository and fork IDs, default branch, bot user
+and, for a GitHub App, the installation ID and App slug. Commit it. It records
+the settings it was resolved from. If `url`, `provider`, `api_url`,
+`fork_source`, `token_env`, `bot_user_id` or anything under `github.app` change,
 commands stop with *lock is stale … run reviewd config resolve*.

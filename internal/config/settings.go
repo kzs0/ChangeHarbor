@@ -61,6 +61,11 @@ type RepositorySettings struct {
 type MirrorSettings struct {
 	Path string `json:"path"`
 	Sync string `json:"sync,omitempty"`
+	// Auth is "none" (credentials come from the mirror's own git config)
+	// or "token" (the forge token is passed to git through the environment).
+	Auth string `json:"auth,omitempty"`
+	// URL is the clone/fetch URL; empty means the repository URL + ".git".
+	URL string `json:"url,omitempty"`
 }
 
 type PublishSettings struct {
@@ -137,7 +142,36 @@ type GitLabSettings struct {
 }
 
 type GitHubSettings struct {
-	RequiredChecks map[string]string `json:"required_checks,omitempty"`
+	RequiredChecks map[string]string  `json:"required_checks,omitempty"`
+	App            *GitHubAppSettings `json:"app,omitempty"`
+}
+
+// GitHubAppSettings authenticates a GitHub repository as a GitHub App
+// instead of with token_env.
+type GitHubAppSettings struct {
+	AppID          string `json:"app_id"`
+	PrivateKeyEnv  string `json:"private_key_env"`
+	InstallationID string `json:"installation_id,omitempty"`
+}
+
+// App returns the repository's GitHub App settings, or nil.
+func (r RepositorySettings) App() *GitHubAppSettings {
+	if r.GitHub == nil {
+		return nil
+	}
+	return r.GitHub.App
+}
+
+// MirrorURL is the URL the mirror is cloned and fetched from.
+func (r RepositorySettings) MirrorURL() string {
+	if r.Mirror.URL != "" {
+		return r.Mirror.URL
+	}
+	u := strings.TrimRight(r.URL, "/")
+	if strings.HasSuffix(u, ".git") {
+		return u
+	}
+	return u + ".git"
 }
 
 type SummarySettings struct {
@@ -286,10 +320,30 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 			return fmt.Errorf("%s.url: same repository as %s", p, other)
 		}
 		seen[key] = p
-		if r.TokenEnv == "" {
-			return fmt.Errorf("%s.token_env: required", p)
-		}
-		if !envName.MatchString(r.TokenEnv) {
+		app := r.App()
+		switch {
+		case r.TokenEnv != "" && app != nil:
+			return fmt.Errorf("%s: set exactly one of token_env and github.app", p)
+		case r.TokenEnv == "" && app == nil:
+			return fmt.Errorf("%s.token_env: required (or set github.app)", p)
+		case app != nil:
+			ap := p + ".github.app"
+			if app.AppID == "" {
+				return fmt.Errorf("%s.app_id: required", ap)
+			}
+			if !numericID.MatchString(app.AppID) {
+				return fmt.Errorf("%s.app_id: must be a numeric App ID", ap)
+			}
+			if app.PrivateKeyEnv == "" {
+				return fmt.Errorf("%s.private_key_env: required", ap)
+			}
+			if !envName.MatchString(app.PrivateKeyEnv) {
+				return fmt.Errorf("%s.private_key_env: invalid environment variable name", ap)
+			}
+			if app.InstallationID != "" && !numericID.MatchString(app.InstallationID) {
+				return fmt.Errorf("%s.installation_id: must be a numeric installation ID", ap)
+			}
+		case !envName.MatchString(r.TokenEnv):
 			return fmt.Errorf("%s.token_env: invalid environment variable name", p)
 		}
 		if r.BotUserID != "" && !numericID.MatchString(r.BotUserID) {
@@ -321,6 +375,25 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 		set("mirror.sync", "auto", &r.Mirror.Sync)
 		if r.Mirror.Sync != "auto" && r.Mirror.Sync != "none" && !remote.MatchString(r.Mirror.Sync) {
 			return fmt.Errorf("%s.mirror.sync: must be auto, none or a remote name", p)
+		}
+		mirrorAuth := "none"
+		if app != nil && r.Mirror.Sync == "auto" {
+			mirrorAuth = "token"
+		}
+		set("mirror.auth", mirrorAuth, &r.Mirror.Auth)
+		if e := enum(p+".mirror.auth", r.Mirror.Auth, "none", "token"); e != nil {
+			return e
+		}
+		if r.Mirror.Auth == "token" && r.Mirror.Sync != "auto" {
+			return fmt.Errorf("%s.mirror.auth: token requires mirror.sync auto", p)
+		}
+		if r.Mirror.URL != "" {
+			if strings.HasPrefix(r.Mirror.URL, "-") {
+				return fmt.Errorf("%s.mirror.url: must be an absolute URL", p)
+			}
+			if _, e := validBase(r.Mirror.URL, true); e != nil {
+				return fmt.Errorf("%s.mirror.url: %w", p, e)
+			}
 		}
 		if r.Branch != "" && (!branch.MatchString(r.Branch) || strings.Contains(r.Branch, "..")) {
 			return fmt.Errorf("%s.branch: invalid branch name", p)
@@ -488,6 +561,10 @@ type LockInputs struct {
 	ForkSource string `json:"fork_source,omitempty"`
 	TokenEnv   string `json:"token_env"`
 	BotUserID  string `json:"bot_user_id,omitempty"`
+	// GitHub App settings; empty for token repositories.
+	GitHubAppID             string `json:"github_app_id,omitempty"`
+	GitHubAppPrivateKeyEnv  string `json:"github_app_private_key_env,omitempty"`
+	GitHubAppInstallationID string `json:"github_app_installation_id,omitempty"`
 }
 
 type LockedRepository struct {
@@ -496,6 +573,9 @@ type LockedRepository struct {
 	SourceRepositoryID string     `json:"source_repository_id"`
 	DefaultBranch      string     `json:"default_branch"`
 	BotUserID          string     `json:"bot_user_id,omitempty"`
+	// InstallationID and AppSlug are resolved for GitHub App repositories.
+	InstallationID string `json:"installation_id,omitempty"`
+	AppSlug        string `json:"app_slug,omitempty"`
 }
 
 // Lock pins forge identities resolved by `reviewd config resolve`.
@@ -506,7 +586,11 @@ type Lock struct {
 
 func (s Settings) LockInputs(name string) LockInputs {
 	r := s.Repositories[name]
-	return LockInputs{URL: r.URL, Provider: r.Provider, APIURL: r.APIURL, ForkSource: r.ForkSource, TokenEnv: r.TokenEnv, BotUserID: r.BotUserID}
+	in := LockInputs{URL: r.URL, Provider: r.Provider, APIURL: r.APIURL, ForkSource: r.ForkSource, TokenEnv: r.TokenEnv, BotUserID: r.BotUserID}
+	if app := r.App(); app != nil {
+		in.GitHubAppID, in.GitHubAppPrivateKeyEnv, in.GitHubAppInstallationID = app.AppID, app.PrivateKeyEnv, app.InstallationID
+	}
+	return in
 }
 
 // Check reports the first repository whose lock entry is missing or stale.
@@ -532,7 +616,8 @@ func (l Lock) Check(s Settings) error {
 			}
 			return fmt.Errorf("repositories.%s: lock is stale (%s changed); run reviewd config resolve", n, strings.Join(changed, ", "))
 		}
-		if !numericID.MatchString(entry.RepositoryID) || !numericID.MatchString(entry.SourceRepositoryID) || entry.DefaultBranch == "" || (entry.BotUserID != "" && !numericID.MatchString(entry.BotUserID)) {
+		if !numericID.MatchString(entry.RepositoryID) || !numericID.MatchString(entry.SourceRepositoryID) || entry.DefaultBranch == "" || (entry.BotUserID != "" && !numericID.MatchString(entry.BotUserID)) ||
+			(s.Repositories[n].App() != nil && !numericID.MatchString(entry.InstallationID)) {
 			return fmt.Errorf("repositories.%s: invalid lock entry; run reviewd config resolve", n)
 		}
 	}

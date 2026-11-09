@@ -64,7 +64,6 @@
         "additionalProperties": false,
         "required": [
           "url",
-          "token_env",
           "mirror",
           "policy"
         ],
@@ -88,7 +87,7 @@
           },
           "token_env": {
             "type": "string",
-            "description": "Environment variable holding the forge token."
+            "description": "Environment variable holding the forge token. Set exactly one of token_env and github.app."
           },
           "token_scheme": {
             "type": "string",
@@ -100,7 +99,7 @@
           },
           "bot_user_id": {
             "type": "string",
-            "description": "Numeric user ID the token acts as. Resolved from /user when omitted; set it for GitHub App tokens."
+            "description": "Numeric user ID the token acts as. Resolved from /user when omitted; for a GitHub App, resolved as the App bot user."
           },
           "fork_source": {
             "type": "string",
@@ -121,6 +120,18 @@
               "sync": {
                 "type": "string",
                 "description": "auto (fetch from origin when configured), none, or a configured remote name. Default auto."
+              },
+              "auth": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "token"
+                ],
+                "description": "none (credentials come from the mirror's own git config) or token (pass the forge token to git through the environment; requires sync auto). Default token for a GitHub App with sync auto, else none."
+              },
+              "url": {
+                "type": "string",
+                "description": "Clone and fetch URL: https (loopback http allowed), no credentials, query or fragment. Default the repository URL plus .git."
               }
             }
           },
@@ -242,6 +253,29 @@
                   "type": "string"
                 },
                 "description": "Check name to trusted GitHub App ID."
+              },
+              "app": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "app_id",
+                  "private_key_env"
+                ],
+                "description": "Authenticate as a GitHub App instead of token_env.",
+                "properties": {
+                  "app_id": {
+                    "type": "string",
+                    "description": "Numeric GitHub App ID."
+                  },
+                  "private_key_env": {
+                    "type": "string",
+                    "description": "Environment variable holding the App's PEM private key."
+                  },
+                  "installation_id": {
+                    "type": "string",
+                    "description": "Numeric installation ID. Default: resolved by reviewd config resolve."
+                  }
+                }
               }
             }
           },
