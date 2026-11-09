@@ -136,7 +136,18 @@ finding on its changed line, posted as a single review), then
 - **Payload URL**: `https://changeharbor.example.com/webhooks/github`
 - **Content type**: `application/json`
 - **Secret**: the value of `GITHUB_WEBHOOK_SECRET`
-- **Events**: **Pull requests** and **Pushes**
+- **Events**: **Pull requests**, **Pushes** and **Issue comments** (for the
+  review command)
+
+The service reviews pull requests when they are opened, reopened, get new
+commits, are marked ready for review or are retargeted. Drafts are skipped
+until they are ready; `review.auto` can skip more (bot authors, labels, title
+keywords). See [Automatic reviews](service.md#automatic-reviews).
+
+To review again, comment `/changeharbor review`, or `@<bot_username> review`.
+The author needs owner, member or collaborator access. GitHub App tokens can't
+look up their own login, so set `bot_username: <app-slug>[bot]` to use the `@`
+form.
 
 ## Steer and tune the review
 

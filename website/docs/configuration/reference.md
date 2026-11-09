@@ -76,6 +76,7 @@ Under `repositories.<name>`:
 | `token_env` | required | Variable holding the forge token. |
 | `token_scheme` | `private-token` | GitLab only: `private-token` or `bearer`. |
 | `bot_user_id` | from the lock | The bot's numeric user ID. Resolved from `/user`; set it for GitHub App tokens. |
+| `bot_username` | from the lock | The bot's login, used for the `@<bot_username> review` comment command and the retry hint in status comments. Resolved from `/user` with `bot_user_id`; set it for GitHub App tokens (`<app-slug>[bot]`). Without it only GitHub's `/changeharbor review` form works. |
 | `fork_source` | — | The one fork whose MRs/PRs are accepted, e.g. `contributors/app`. |
 | `branch` | default branch, pinned in the lock | Target branch reviews and approvals are for. |
 | `policy` | required | [Risk policy](policy.md) file. |
@@ -119,8 +120,9 @@ change or its target moves.
 
 ### `review`
 
-Trusted review guidance and path filters. They come only from this file, never
-from the repository under review.
+Trusted review guidance, path filters, large-change handling and automatic
+review triggers. They come only from this file, never from the repository
+under review.
 
 ```yaml
 # changeharbor.yaml
@@ -138,14 +140,26 @@ repositories:
         - paths: ["migrations/**"]
           instructions: Check that every migration can be rolled back.
       exclude: ["vendor/**", "**/*.pb.go", "go.sum"]
+      large_changes: partial
+      auto:
+        drafts: skip
+        ignore_authors: ["dependabot[bot]", "renovate[bot]"]
+        skip_labels: ["skip-review"]
+        skip_title_keywords: ["[skip review]", "WIP"]
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `review` | — | The section itself. Changing anything in it invalidates existing reviews. |
+| `review` | — | The section itself. Changing anything in it except `review.auto` invalidates existing reviews. |
 | `review.instructions` | — | Repository-wide instructions added to every review prompt. |
 | `review.path_instructions` | — | List of `{paths, instructions}`. An entry is added only when a changed, non-excluded file (old or new path) matches one of its globs. |
 | `review.exclude` | — | Globs of files left out of the model's input, such as lockfiles, vendored and generated code. Excluded files are listed in the summary and can't get comments. Risk-policy minimums still count them, so excluding can't lower risk. A file moved out of an excluded directory is still reviewed. If every changed file is excluded, nothing is reviewed: the run is `input_incomplete` and is never approved. |
+| `review.large_changes` | `incomplete` | What to do when the diff doesn't fit the model's request budget. `incomplete`: send nothing; the summary comment says the change was not reviewed and what to do. `partial`: review as many whole files as fit, in diff order, and list the rest as *Not reviewed (too large)*. A partial review is never approved, and findings on files that weren't sent are rejected. |
+| `review.auto` | — | When `reviewd serve` reviews a change on its own. These keys don't affect `reviewd review --url` or the review comment command, and changing them invalidates nothing. Every value is read from the forge API, never from the webhook payload. |
+| `review.auto.drafts` | `skip` | `skip` or `review` draft pull/merge requests. A skipped draft is reviewed when it is marked ready. |
+| `review.auto.ignore_authors` | — | Author logins not reviewed automatically. `*` matches any run of characters; nothing else is special, so `dependabot[bot]` is literal. Case is ignored. |
+| `review.auto.skip_labels` | — | Labels that skip automatic review (whole name, case ignored). |
+| `review.auto.skip_title_keywords` | — | Title substrings that skip automatic review (case ignored), e.g. `[skip review]`. |
 
 All instructions together are capped at 16 KiB. Globs use `*` within a path
 segment, `?` for one character and `**` for whole segments.
@@ -164,15 +178,20 @@ Optional background summaries of the repository, used as review context.
 A saved review can only be published while its **review identity** is
 unchanged: `url`, `provider`, `api_url`, `fork_source`, `mirror.path`, `policy`
 (and the policy file's contents, except `auto_approve_max`), `branch`, and
-everything under `review` (`review.instructions`, `review.path_instructions`,
-`review.exclude`).
-Everything under `publish`, `gitlab`, `github`, tokens and sync settings can
-change freely. `reviewd config check` lists the identity keys.
+everything under `review` except `review.auto` (`review.instructions`,
+`review.path_instructions`, `review.exclude`, `review.large_changes`).
+Everything under `publish`, `review.auto`, `gitlab`, `github`, `bot_username`,
+tokens and sync settings can change freely. `reviewd config check` lists the identity keys.
 
 ## The lock file
 
 `reviewd config resolve` writes `changeharbor.lock.yaml` next to the config
 with the IDs it looked up: repository and fork IDs, default branch and bot
-user. Commit it. It records the settings it was resolved from. If `url`,
-`provider`, `api_url`, `fork_source`, `token_env` or `bot_user_id` change,
+user ID and username. Commit it. It records the settings it was resolved from.
+If `url`, `provider`, `api_url`, `fork_source`, `token_env`, `bot_user_id` or
+`bot_username` change,
 commands stop with *lock is stale … run reviewd config resolve*.
+
+A lock written before `bot_username` existed stays valid; rerun
+`reviewd config resolve` to record the username and enable the `@` form of
+the review command.

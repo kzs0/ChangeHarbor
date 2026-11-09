@@ -207,7 +207,12 @@ repositories:
 - **Suggestions** let reviewers apply a fix in one click. A suggestion
   containing a line that starts with `/` is left out on GitLab, where that
   line could run a quick action.
-- Changing `review` invalidates existing reviews; the `publish` settings don't.
+- **Large changes** that don't fit the model's request budget aren't
+  reviewed: the summary comment says so and what to do. With
+  `review.large_changes: partial`, the files that fit are reviewed and the rest
+  are listed as not reviewed. Partial reviews are never approved.
+- Changing `review` (except `review.auto`) invalidates existing reviews; the
+  `publish` settings don't.
 
 ## 11. Automate with webhooks
 
@@ -216,13 +221,22 @@ webhook**:
 
 - **URL**: `https://changeharbor.example.com/webhooks/gitlab`
 - **Secret token**: the value of `GITLAB_WEBHOOK_SECRET`
-- **Triggers**: **Merge request events**, and **Push events** filtered to
-  `main`
+- **Triggers**: **Merge request events**, **Comments** (for the review
+  command), and **Push events** filtered to `main`
 
-From then on each MR update first withdraws ChangeHarbor's approval of the
-previous head, then reviews, comments and (when eligible) approves the new
-one. Each push to `main` re-checks earlier approvals and withdraws any whose
-target moved.
+From then on each MR that is opened, reopened, gets new commits, is marked
+ready or is retargeted first has ChangeHarbor's approval of the previous head
+withdrawn, then is reviewed, commented on and (when eligible) approved. Label,
+title and description edits and approvals don't start a review. Drafts are
+skipped until they are ready; `review.auto` can skip more. See
+[Automatic reviews](service.md#automatic-reviews). Each push to `main`
+re-checks earlier approvals and withdraws any whose target moved.
+
+To review again, comment `@<bot_username> review` (for example
+`@reviewd-bot review`) as the first line. The author needs Developer access or
+above. The username is resolved into the lock by `reviewd config resolve`.
+GitLab runs line-leading `/` commands as quick actions, so there is no slash
+form.
 
 ## Fork merge requests
 

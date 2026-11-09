@@ -58,6 +58,19 @@ setting, or opt out with `publish.protections: advisory`.
 | required trusted job "…" is missing / failed or did not run / is ambiguous | Check the job name in `gitlab.required_jobs` (or the policy's `required_checks`). Parallel jobs are named `test 1/3`. |
 | required check failed or has an untrusted producer/revision (GitHub) | Check the app ID in `github.required_checks`. |
 
+## Reviews that don't complete or don't start
+
+| What you see | What it means | Fix |
+| --- | --- | --- |
+| Status comment, reason `required_input_omitted` | The diff doesn't fit the model's request budget, so nothing was sent. | Split the change, exclude generated or vendored files with `review.exclude`, set `review.large_changes: partial`, or use a model with a larger context window. |
+| Status comment, reason `invalid_output` | The model's reply failed validation. Nothing from it is shown. | Comment `@<bot_username> review` or push. Inspect the run with `reviewd explain --run <id>`. |
+| Status comment, reason `model_request_failed`, `mirror_unavailable` or `internal_error` | The job's last attempt failed. | Find the run ID in the service log for the error, fix it, then comment `@<bot_username> review` or push. |
+| partial review: some files were not reviewed; approval requires a complete review | `review.large_changes: partial` left files out. | Expected: partial reviews are never approved. Split the change or use a larger model. |
+| review did not complete (…) | The run is `input_incomplete` or `invalid_output`. | See the status comment's reason above. |
+| `skipped automatic review of …: draft` (or `ignored_author`, `skip_label`, `skip_title_keyword`) in the service log | `review.auto` skipped the change. | Mark it ready, remove the label or keyword and push, or comment `@<bot_username> review`. |
+| A review command does nothing | It was ignored; the reason is in state under `review_command` (`unauthorized`, `not_a_command`, `bot_author`, `bot_username_unknown`, `branch_mismatch`, …). | The command must be the comment's first line, from someone with write access (GitHub owner/member/collaborator, GitLab Developer+). Set `bot_username` or rerun `reviewd config resolve` for the `@` form, and subscribe the webhook to comments. |
+| A GitLab MR edit doesn't start a review | Only new commits, marking ready and retargeting do. | Push, or comment `@<bot_username> review`. |
+
 ## Risk
 
 | Reason | Fix |
