@@ -12,13 +12,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/kzs0/reviewd/internal/config"
 	"github.com/kzs0/reviewd/internal/contextbuild"
 	gh "github.com/kzs0/reviewd/internal/forge/github"
 	gl "github.com/kzs0/reviewd/internal/forge/gitlab"
 	gitreader "github.com/kzs0/reviewd/internal/git"
-	"github.com/kzs0/reviewd/internal/policy"
 	"github.com/kzs0/reviewd/internal/storage"
 	"go.yaml.in/yaml/v3"
 )
@@ -162,7 +162,39 @@ func loadSettingsFile(path string) (config.Settings, config.Sources, error) {
 	if errors.Is(e, os.ErrNotExist) {
 		return s, src, fmt.Errorf("config %s not found; create one with reviewd config init or pass --config", path)
 	}
+	if e == nil {
+		warn(s.Warnings)
+	}
 	return s, src, e
+}
+
+// warned holds the warnings printed by the current command, so each is
+// printed once however often the file is loaded.
+var warned struct {
+	sync.Mutex
+	seen map[string]bool
+}
+
+func resetWarnings() {
+	warned.Lock()
+	warned.seen = nil
+	warned.Unlock()
+}
+
+// warn prints each configuration warning once per command to stderr.
+func warn(ws []string) {
+	warned.Lock()
+	defer warned.Unlock()
+	for _, w := range ws {
+		if warned.seen[w] {
+			continue
+		}
+		if warned.seen == nil {
+			warned.seen = map[string]bool{}
+		}
+		warned.seen[w] = true
+		fmt.Fprintln(os.Stderr, "warning: "+w)
+	}
 }
 
 func loadUnified(path, stateFlag string, stateSet bool) (unifiedConfig, error) {
@@ -234,7 +266,10 @@ func (u unifiedConfig) compile(name string) (forgeConfig, map[string]string, err
 		RepositoryID: l.RepositoryID, SourceRepositoryID: l.SourceRepositoryID, RepoPath: r.Mirror.Path, TokenEnv: r.TokenEnv,
 		PolicyFile: r.Policy, Branch: r.Branch, BotUserID: l.BotUserID, Mode: approvalModes[r.Publish.Approvals], CommentMode: commentModes[r.Publish.Comments], InlineCommentMode: commentModes[r.Publish.InlineComments], Protections: r.Publish.Protections,
 		Suggestions: r.Publish.Suggestions, InlineMinSeverity: r.Publish.InlineMinSeverity,
-		name: name, response: r.Response, modelConfig: u.settings.Models[r.Model]}
+		name: name, response: r.Response, modelConfig: u.settings.Models[r.Model], inlinePolicy: r.InlinePolicy}
+	if m, ok := u.settings.InlineModels[r.Model]; ok && r.Model != "" {
+		c.inlineModel = &m
+	}
 	src["repository_id"], src["source_repository_id"], src["branch"], src["bot_user_id"] = "lock", "lock", "file", "lock"
 	if c.Branch == "" {
 		c.Branch, src["branch"] = l.DefaultBranch, "lock"
@@ -251,17 +286,22 @@ func (u unifiedConfig) compile(name string) (forgeConfig, map[string]string, err
 	}
 	c.BotUsername, src["bot_username"] = l.BotUsername, "lock"
 	if r.BotUsername != "" {
-		c.BotUsername, src["bot_username"] = r.BotUsername, "file"
+		c.BotUsername, src["bot_username"] = r.BotUsername, cmp.Or(src["auth.bot_username"], "file")
 	}
 	if r.BotUserID != "" {
-		src["bot_user_id"] = "file"
+		src["bot_user_id"] = cmp.Or(src["auth.bot_user_id"], "file")
 	}
+	src["auth.bot_user_id"], src["auth.bot_username"] = src["bot_user_id"], src["bot_username"]
 	c.mirrorAuth, c.mirrorURL, c.mirrorAuto = r.Mirror.Auth, r.MirrorURL(), r.Mirror.Sync == "auto"
 	if app := r.App(); app != nil {
 		c.appID, c.appKeyEnv, c.installationID, c.appSlug = app.AppID, app.PrivateKeyEnv, l.InstallationID, l.AppSlug
 		src["github_installation_id"] = "lock"
 		if app.InstallationID != "" {
 			src["github_installation_id"] = "file"
+		}
+		src["auth.github_app.installation_id"] = src["github_installation_id"]
+		if src["mirror.auth"] == "default" && r.Mirror.Auth == "token" {
+			src["mirror.auth"] = "default (github_app)"
 		}
 	}
 	switch r.Mirror.Sync {
@@ -285,12 +325,7 @@ func (u unifiedConfig) compile(name string) (forgeConfig, map[string]string, err
 		jobs := r.GitLab.RequiredJobs
 		src["gitlab.required_jobs"] = "file"
 		if jobs == nil {
-			f, e := os.Open(r.Policy)
-			if e != nil {
-				return forgeConfig{}, nil, fmt.Errorf("repositories.%s.policy: %w", name, e)
-			}
-			p, e := policy.Decode(f)
-			f.Close()
+			p, e := r.LoadPolicy()
 			if e != nil {
 				return forgeConfig{}, nil, fmt.Errorf("repositories.%s.policy: %w", name, e)
 			}
@@ -315,7 +350,7 @@ func (u unifiedConfig) compile(name string) (forgeConfig, map[string]string, err
 func (c forgeConfig) effective() map[string]any {
 	out := map[string]any{"provider": c.Provider, "web_base": c.WebBase, "api_base": c.APIBase, "repository": strings.Trim(c.Owner+"/"+c.Repository, "/"),
 		"repository_id": c.RepositoryID, "source_repository_id": c.SourceRepositoryID, "branch": c.Branch, "mirror": c.RepoPath, "sync_remote": c.SyncRemote,
-		"policy": c.PolicyFile, "model": c.modelConfig, "response": c.response, "token_env": c.TokenEnv, "bot_user_id": c.BotUserID,
+		"policy": c.policyRef(), "model": c.modelConfig, "response": c.response, "token_env": c.TokenEnv, "bot_user_id": c.BotUserID,
 		"approvals":                map[string]string{"off": "off", "evaluate": "shadow", "submit": "submit", "": "off", "shadow": "off"}[c.Mode],
 		"comments":                 map[string]string{"off": "off", "": "shadow", "post": "post"}[c.CommentMode],
 		"inline_comments":          map[string]string{"off": "off", "": "shadow", "post": "post"}[c.InlineCommentMode],
@@ -334,6 +369,9 @@ func (c forgeConfig) effective() map[string]any {
 		"auto_skip_labels":         nonNil(c.AutoSkipLabels),
 		"auto_skip_title_keywords": nonNil(c.AutoSkipTitleKeywords),
 		"bot_username":             c.BotUsername}
+	if c.inlineModel != nil {
+		out["model"] = "inline"
+	}
 	if c.appID != "" {
 		out["auth"], out["github_app_id"], out["github_installation_id"] = "github_app", c.appID, c.installationID
 	}
@@ -365,21 +403,21 @@ func nonNil(xs []string) []string {
 	return xs
 }
 
-// Keys whose change alters review identity and therefore invalidates
-// existing reviews.
-var reviewInvalidating = []string{"url", "provider", "api_url", "fork_source", "mirror.path", "policy", "branch",
-	"review.instructions", "review.path_instructions", "review.exclude", "review.large_changes"}
-
 type repoReport struct {
-	Effective          map[string]any
-	Sources            map[string]string
+	Effective map[string]any
+	Sources   map[string]string
+	// InvalidatesReviews lists the keys whose change invalidates reviews
+	// (config.IdentityKeys); ReviewIdentity is the digest of the current
+	// values, recorded as ConfigDigest with each review.
 	InvalidatesReviews []string
+	ReviewIdentity     string
 }
 
 type checkReport struct {
 	OK                  bool
 	Config, Lock, State string
 	Sources             map[string]string
+	Warnings            []string
 	Repositories        map[string]repoReport
 }
 
@@ -426,13 +464,20 @@ func configCheck(args []string) (int, error) {
 	if e != nil {
 		return 2, e
 	}
-	report := checkReport{OK: true, Config: p, Lock: config.LockPath(p), State: u.state, Sources: map[string]string{"state": u.stateSource}, Repositories: map[string]repoReport{}}
+	report := checkReport{OK: true, Config: p, Lock: config.LockPath(p), State: u.state, Sources: map[string]string{"state": u.stateSource},
+		Warnings: nonNil(u.settings.Warnings), Repositories: map[string]repoReport{}}
 	for _, n := range u.names() {
 		c, src, e := u.compile(n)
 		if e != nil {
 			return 2, e
 		}
-		report.Repositories[n] = repoReport{Effective: c.effective(), Sources: src, InvalidatesReviews: reviewInvalidating}
+		pd, e := c.policyDigest()
+		if e != nil {
+			return 2, fmt.Errorf("repositories.%s.policy: %w", n, e)
+		}
+		eff := c.effective()
+		eff["policy_digest"] = pd
+		report.Repositories[n] = repoReport{Effective: eff, Sources: src, InvalidatesReviews: config.IdentityKeys(), ReviewIdentity: forgeConfigDigest(c)}
 	}
 	return 0, emit(report)
 }
@@ -486,17 +531,17 @@ func resolveLock(ctx context.Context, path string) (config.Lock, error) {
 				// lookup; everything else uses the installation token.
 				key, e := loadAppKey(app.PrivateKeyEnv)
 				if e != nil {
-					return lock, fmt.Errorf("%s.github.app.private_key_env: %w", at, e)
+					return lock, fmt.Errorf("%s.auth.github_app.private_key_env: %w", at, e)
 				}
 				a := &gh.App{BaseURL: ep.APIBase, AppID: app.AppID, Key: key}
 				id, e := a.Identity(ctx)
 				if e != nil {
-					return lock, fmt.Errorf("%s.github.app: %w", at, e)
+					return lock, fmt.Errorf("%s.auth.github_app: %w", at, e)
 				}
 				entry.AppSlug, entry.InstallationID = id.Slug, app.InstallationID
 				if entry.InstallationID == "" {
 					if entry.InstallationID, e = a.Installation(ctx, ep.Owner, ep.Path); e != nil {
-						return lock, fmt.Errorf("%s.github.app: resolving installation: %w", at, e)
+						return lock, fmt.Errorf("%s.auth.github_app: resolving installation: %w", at, e)
 					}
 				}
 				c = gh.NewClientWithTokenSource(ep.APIBase, a.TokenSource(entry.InstallationID, ep.Path), nil, 1<<20)
@@ -626,7 +671,7 @@ func configInit(ctx context.Context, args []string) (int, error) {
 	if *apiURL != "" {
 		fmt.Fprintf(&y, "    api_url: %s\n", q(*apiURL))
 	}
-	fmt.Fprintf(&y, "    token_env: %s\n    mirror:\n      path: %s\n", *tokenEnv, q(*mirror))
+	fmt.Fprintf(&y, "    auth:\n      token_env: %s\n    mirror:\n      path: %s\n", *tokenEnv, q(*mirror))
 	y.WriteString("      # sync: auto                # auto (fetch from origin when configured), none, or a remote name\n")
 	fmt.Fprintf(&y, "    policy: %s\n", q(*policyPath))
 	y.WriteString("    # branch: main                # default: the repository's default branch, pinned in the lock\n")
@@ -657,7 +702,8 @@ func configInit(ctx context.Context, args []string) (int, error) {
 }
 
 // configMigrate converts legacy forge (and optional service) files offline.
-// Legacy IDs become the lock, so existing reviews keep their identity.
+// Legacy IDs become the lock, so existing reviews keep their identity. With
+// --layout it rewrites a changeharbor.yaml from the deprecated spellings.
 func configMigrate(args []string) (int, error) {
 	f := flag.NewFlagSet("config migrate", flag.ContinueOnError)
 	forgePath := f.String("forge-config", "", "legacy forge configuration")
@@ -665,8 +711,21 @@ func configMigrate(args []string) (int, error) {
 	state := f.String("state", "", "state directory to record")
 	output := f.String("output", "changeharbor.yaml", "config file to write")
 	name := f.String("name", "", "repository name (default: derived from the repository)")
-	if f.Parse(args) != nil || f.NArg() != 0 || *forgePath == "" {
-		return 2, errors.New("usage: reviewd config migrate --forge-config FILE [--server-config FILE] [--state DIR] [--output changeharbor.yaml]")
+	layout := f.Bool("layout", false, "rewrite changeharbor.yaml from deprecated spellings to the current layout")
+	cfg := f.String("config", "", "changeharbor.yaml to rewrite with --layout")
+	write := f.Bool("write", false, "with --layout, replace the file instead of printing it")
+	usage := errors.New("usage: reviewd config migrate --forge-config FILE [--server-config FILE] [--state DIR] [--output changeharbor.yaml]\n       reviewd config migrate --layout [--config changeharbor.yaml] [--write]")
+	if f.Parse(args) != nil || f.NArg() != 0 {
+		return 2, usage
+	}
+	if *layout {
+		if *forgePath != "" || *serverPath != "" {
+			return 2, errors.New("--layout rewrites changeharbor.yaml; it does not take --forge-config or --server-config")
+		}
+		return migrateLayout(configPath(*cfg), *write)
+	}
+	if *forgePath == "" {
+		return 2, usage
 	}
 	c, e := loadForgeConfig(*forgePath)
 	if e != nil {
@@ -681,7 +740,8 @@ func configMigrate(args []string) (int, error) {
 	if *name == "" {
 		*name = repoNameFromURL(rawURL)
 	}
-	repo := map[string]any{"url": rawURL, "provider": c.Provider, "token_env": c.TokenEnv, "branch": c.Branch, "policy": c.PolicyFile}
+	auth := map[string]any{"token_env": c.TokenEnv}
+	repo := map[string]any{"url": rawURL, "provider": c.Provider, "auth": auth, "branch": c.Branch, "policy": c.PolicyFile}
 	if ep, err := (config.RepositorySettings{URL: rawURL, Provider: c.Provider}).Endpoint(); err != nil || ep.APIBase != strings.TrimRight(c.APIBase, "/") {
 		repo["api_url"] = c.APIBase
 	}
@@ -691,7 +751,7 @@ func configMigrate(args []string) (int, error) {
 	}
 	repo["mirror"] = map[string]any{"path": c.RepoPath, "sync": sync}
 	if c.TokenScheme != "" {
-		repo["token_scheme"] = c.TokenScheme
+		auth["token_scheme"] = c.TokenScheme
 	}
 	approvals := map[string]string{"": "off", "shadow": "off", "off": "off", "evaluate": "shadow", "submit": "submit"}[c.Mode]
 	comments := map[string]string{"": "shadow", "off": "off", "post": "post"}[c.CommentMode]
@@ -718,7 +778,7 @@ func configMigrate(args []string) (int, error) {
 			}
 		}
 		if len(auto) > 0 {
-			reviewSettings["auto"] = auto
+			repo["triggers"] = auto
 		}
 		if c.Instructions != "" {
 			reviewSettings["instructions"] = c.Instructions
@@ -729,13 +789,15 @@ func configMigrate(args []string) (int, error) {
 		if len(c.Exclude) > 0 {
 			reviewSettings["exclude"] = c.Exclude
 		}
-		repo["review"] = reviewSettings
+		if len(reviewSettings) > 0 {
+			repo["review"] = reviewSettings
+		}
 	}
 	if c.Protections != "" {
 		publishSettings["protections"] = c.Protections
 	}
 	if c.BotUsername != "" {
-		repo["bot_username"] = c.BotUsername
+		auth["bot_username"] = c.BotUsername
 	}
 	repo["publish"] = publishSettings
 	if c.Provider == "gitlab" {
@@ -818,6 +880,32 @@ func configMigrate(args []string) (int, error) {
 	return 0, emit(map[string]any{"Config": *output, "Lock": config.LockPath(*output), "Warnings": warnings})
 }
 
+// migrateLayout rewrites a changeharbor.yaml to the current layout: printed
+// to stdout with the changes on stderr, or with write the file is replaced.
+func migrateLayout(path string, write bool) (int, error) {
+	raw, e := os.ReadFile(path)
+	if e != nil {
+		return 2, e
+	}
+	out, changes, e := config.MigrateLayout(raw)
+	if e != nil {
+		return 2, e
+	}
+	if !write {
+		for _, c := range changes {
+			fmt.Fprintln(os.Stderr, "migrated: "+c)
+		}
+		_, e = os.Stdout.Write(out)
+		return 0, e
+	}
+	if len(changes) > 0 {
+		if e = writeFile(path, out, true); e != nil {
+			return 1, e
+		}
+	}
+	return 0, emit(map[string]any{"Config": path, "Changes": nonNil(changes)})
+}
+
 // loadServerConfig reads a serve configuration: a changeharbor.yaml (it
 // has a "version" key) or a legacy service file.
 func loadServerConfig(path string) (serverConfig, error) {
@@ -855,13 +943,16 @@ func unifiedServerConfig(path string) (serverConfig, error) {
 			return out, e
 		}
 		r := u.settings.Repositories[n]
-		repo := repositoryConfig{Path: c.RepoPath, Branch: c.Branch, PolicyFile: c.PolicyFile, ModelConfig: c.modelConfig, Response: c.response}
+		repo := repositoryConfig{Path: c.RepoPath, Branch: c.Branch, PolicyFile: c.PolicyFile, ModelConfig: c.modelConfig, Response: c.response, inlineModel: c.inlineModel}
 		if r.Summary != nil {
 			var limits contextbuild.SummaryLimits
 			if e := strictJSON(r.Summary.Limits, &limits); e != nil {
 				return out, fmt.Errorf("repositories.%s.summary.limits: %w", n, e)
 			}
 			repo.SummaryModelConfig, repo.SummaryLimits = u.settings.Models[r.Summary.Model], &limits
+			if m, ok := u.settings.InlineModels[r.Summary.Model]; ok {
+				repo.inlineSummaryModel = &m
+			}
 		}
 		fc := c
 		repo.forge = &fc

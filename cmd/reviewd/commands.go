@@ -20,6 +20,7 @@ import (
 
 	"github.com/kzs0/bedrock"
 	"github.com/kzs0/reviewd/internal/archive"
+	"github.com/kzs0/reviewd/internal/config"
 	"github.com/kzs0/reviewd/internal/contextbuild"
 	"github.com/kzs0/reviewd/internal/contextpack"
 	"github.com/kzs0/reviewd/internal/evaluate"
@@ -103,20 +104,41 @@ func modelFor(ctx context.Context, configPath, responsePath, state, runID string
 	if (configPath == "") == (responsePath == "") {
 		return nil, nil, errors.New("provide exactly one of --response and --model-config")
 	}
-	if configPath == "" {
+	c, e := loadModelConfig(configPath, nil)
+	if e != nil {
+		return nil, nil, e
+	}
+	return modelForConfig(ctx, c, responsePath, state, runID)
+}
+
+// loadModelConfig returns inline, or loads the JSON or YAML file at path;
+// nil when neither is set.
+func loadModelConfig(path string, inline *model.HTTPConfig) (*model.HTTPConfig, error) {
+	if inline != nil {
+		c := *inline
+		return &c, nil
+	}
+	if path == "" {
+		return nil, nil
+	}
+	c, e := config.LoadModelConfig(path)
+	if e != nil {
+		return nil, e
+	}
+	return &c, nil
+}
+
+// modelForConfig is modelFor with a loaded model config (nil: use the
+// offline response).
+func modelForConfig(ctx context.Context, c *model.HTTPConfig, responsePath, state, runID string) (model.Model, func(), error) {
+	if (c == nil) == (responsePath == "") {
+		return nil, nil, errors.New("provide exactly one of --response and --model-config")
+	}
+	if c == nil {
 		b, e := os.ReadFile(responsePath)
 		return &model.Fake{Response: model.Response{Raw: b}}, func() {}, e
 	}
-	f, e := os.Open(configPath)
-	if e != nil {
-		return nil, nil, e
-	}
-	defer f.Close()
-	c, e := model.DecodeHTTPConfig(f)
-	if e != nil {
-		return nil, nil, e
-	}
-	m, e := model.NewHTTP(c)
+	m, e := model.NewHTTP(*c)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -257,7 +279,15 @@ type repositoryConfig struct {
 	ForgeConfig string `json:"forge_config"`
 
 	forge *forgeConfig // compiled from changeharbor.yaml
+	// Inline model configs from changeharbor.yaml; they replace
+	// ModelConfig and SummaryModelConfig.
+	inlineModel, inlineSummaryModel *model.HTTPConfig
 }
+
+func (r repositoryConfig) hasSummaryModel() bool {
+	return r.SummaryModelConfig != "" || r.inlineSummaryModel != nil
+}
+
 type serverConfig struct {
 	ContextRebuildInterval string                      `json:"context_rebuild_interval"`
 	ReconciliationInterval string                      `json:"reconciliation_interval"`
@@ -302,7 +332,7 @@ func (c serverConfig) validate() error {
 		return e
 	}
 	for key, repo := range c.Repositories {
-		if (repo.SummaryModelConfig == "") != (repo.SummaryLimits == nil) {
+		if repo.hasSummaryModel() != (repo.SummaryLimits != nil) {
 			return errors.New("background summary model and separate limits must be configured together")
 		}
 		if key == "" || repo.Path == "" || repo.Branch == "" {
@@ -693,7 +723,7 @@ func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc 
 			return saveRecord(ctx, c.State, "review_skip", key, struct{ Reason, Head string }{reason, head})
 		}
 	}
-	id, result, _, e := forgeReview(ctx, fc, changeURL(fc, number), reviewOptions{State: c.State, Response: o.Response, ModelConfig: o.ModelConfig, Minimum: 1, Threshold: 3, CommandID: commandID})
+	id, result, _, e := forgeReview(ctx, fc, changeURL(fc, number), reviewOptions{State: c.State, Response: o.Response, ModelConfig: o.ModelConfig, InlineModel: o.inlineModel, Minimum: 1, Threshold: 3, CommandID: commandID})
 	if e != nil {
 		var f *reviewFailure
 		if errors.As(e, &f) && attempts >= serviceMaxAttempts && fc.CommentMode == "post" {

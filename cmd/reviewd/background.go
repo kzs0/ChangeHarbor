@@ -72,11 +72,15 @@ func rebuildRepositories(ctx context.Context, c serverConfig, now time.Time) err
 					if e != nil {
 						return e
 					}
-					if repo.SummaryModelConfig != "" {
+					if repo.hasSummaryModel() {
 						if repo.SummaryLimits == nil {
 							return errors.New("separate summary limits required")
 						}
-						m, close, e := modelFor(ctx, repo.SummaryModelConfig, "", c.State, "summary:"+snap.ID)
+						mc, e := loadModelConfig(repo.SummaryModelConfig, repo.inlineSummaryModel)
+						if e != nil {
+							return e
+						}
+						m, close, e := modelForConfig(ctx, mc, "", c.State, "summary:"+snap.ID)
 						if e != nil {
 							return e
 						}

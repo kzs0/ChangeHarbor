@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/kzs0/reviewd/internal/config"
 	"github.com/kzs0/reviewd/internal/contextpack"
 	gitreader "github.com/kzs0/reviewd/internal/git"
 	"github.com/kzs0/reviewd/internal/model"
@@ -60,6 +61,7 @@ func run(ctx context.Context, args []string) int {
 	return code
 }
 func runCommand(ctx context.Context, args []string) int {
+	resetWarnings()
 	if handled, code := handleForgeReview(ctx, args); handled {
 		return code
 	}
@@ -325,15 +327,15 @@ func (s savedRelease) Complete(ctx context.Context, _ release.Request) (release.
 // evaluateDiffPolicy uses the complete unfiltered manifest; history is unknown
 // until a verified ancestry-bound provider history is supplied.
 func evaluateDiffPolicy(ctx context.Context, path string, d gitreader.Diff) (riskpolicy.Decision, error) {
-	f, e := os.Open(path)
+	p, e := config.LoadPolicy(path)
 	if e != nil {
 		return riskpolicy.Decision{}, e
 	}
-	defer f.Close()
-	p, e := riskpolicy.Decode(f)
-	if e != nil {
-		return riskpolicy.Decision{}, e
-	}
+	return evaluatePolicy(ctx, p, d)
+}
+
+// evaluatePolicy applies a loaded policy to a diff.
+func evaluatePolicy(ctx context.Context, p riskpolicy.Policy, d gitreader.Diff) (riskpolicy.Decision, error) {
 	facts := riskpolicy.Facts{PolicyTrusted: true, RevisionsCurrent: true}
 	for _, c := range d.Files {
 		known := !c.Binary && c.Additions >= 0 && c.Deletions >= 0
