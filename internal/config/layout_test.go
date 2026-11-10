@@ -1121,6 +1121,10 @@ repositories:
     policy: /p.json
     review:
       exclude: [vendor/**]  # vendored code
+      path_instructions:
+        - {paths: ["db/**"], instructions: Check migrations.}  # db rule
+        - paths: [x]
+          instructions: Check x.
   web:
     url: https://gitlab.com/group/web
     auth: {token_env: T}
@@ -1132,11 +1136,12 @@ repositories:
 		t.Fatal(e)
 	}
 	for _, l := range strings.Split(string(out), "\n") {
-		if strings.Contains(l, "# the mirror") && !strings.Contains(l, "mirror:") || strings.Contains(l, "# vendored code") && !strings.Contains(l, "exclude:") {
+		if strings.Contains(l, "# the mirror") && !strings.Contains(l, "mirror:") || strings.Contains(l, "# vendored code") && !strings.Contains(l, "exclude:") ||
+			strings.Contains(l, "# db rule") && !strings.Contains(l, "- paths:") {
 			t.Fatalf("comment moved to %q:\n%s", l, out)
 		}
 	}
-	for _, c := range []string{"# the mirror", "# vendored code"} {
+	for _, c := range []string{"# the mirror", "# vendored code", "# db rule"} {
 		if !strings.Contains(string(out), c) {
 			t.Fatalf("comment %q lost:\n%s", c, out)
 		}
