@@ -990,3 +990,155 @@ func mustJSON(t *testing.T, y string) []byte {
 	}
 	return b
 }
+
+// GitHub-only auth keys in defaults apply only to GitHub repositories, as
+// auth.token_scheme applies only to GitLab ones, so defaults may hold both an
+// App (for GitHub) and a token (for GitLab).
+func TestDefaultsAuthIsProviderSpecific(t *testing.T) {
+	const gl = "  gl:\n    url: https://gitlab.com/group/gl\n    mirror: {path: /m/gl}\n"
+	const gh = "  gh:\n    url: https://github.com/acme/gh\n    mirror: {path: /m/gh}\n"
+	app := "version: 1\ndefaults:\n  policy: /p.json\n  auth:\n    github_app: {app_id: 1, private_key_env: APP_KEY}\nrepositories:\n"
+	// An inherited App never reaches a GitLab repository.
+	decodeErr(t, app+gl, "repositories.gl.auth.token_env: required")
+	decodeErr(t, app+gl+"    auth: {token_scheme: bearer}\n", "repositories.gl.auth.token_env: required")
+	if s, _ := decodeOK(t, app+gl+"    auth: {token_env: GL}\n"+gh); s.Repositories["gl"].Auth.GitHubApp != nil || s.Repositories["gh"].Auth.GitHubApp == nil {
+		t.Fatalf("gl %+v gh %+v", s.Repositories["gl"].Auth, s.Repositories["gh"].Auth)
+	}
+	// Defaults may set both: GitHub repositories use the App, GitLab ones the token.
+	both := "version: 1\ndefaults:\n  policy: /p.json\n  auth:\n    token_env: GL_TOKEN\n    token_scheme: bearer\n    github_app: {app_id: 1, private_key_env: APP_KEY}\nrepositories:\n"
+	s, src := decodeOK(t, both+gl+gh+"  pat:\n    url: https://github.com/acme/pat\n    mirror: {path: /m/pat}\n    auth: {token_env: GH_TOKEN}\n")
+	g, h, pat := s.Repositories["gl"], s.Repositories["gh"], s.Repositories["pat"]
+	if g.Auth.TokenEnv != "GL_TOKEN" || g.Auth.TokenScheme != "bearer" || g.Auth.GitHubApp != nil || g.App() != nil {
+		t.Fatalf("gl %+v", g.Auth)
+	}
+	if h.Auth.TokenEnv != "" || h.TokenEnv != "" || h.Auth.GitHubApp == nil || h.Auth.GitHubApp.AppID != "1" || h.Auth.TokenScheme != "" || h.Mirror.Auth != "token" {
+		t.Fatalf("gh %+v", h.Auth)
+	}
+	if pat.Auth.TokenEnv != "GH_TOKEN" || pat.Auth.GitHubApp != nil {
+		t.Fatalf("pat %+v", pat.Auth)
+	}
+	for k, want := range map[string]string{
+		"repositories.gl.auth.token_env":          "defaults",
+		"repositories.gh.auth.github_app.app_id":  "defaults",
+		"repositories.gh.auth.token_env":          "",
+		"repositories.gl.auth.github_app.app_id":  "",
+		"repositories.pat.auth.github_app.app_id": "",
+	} {
+		if src[k] != want {
+			t.Errorf("source %s=%q want %q", k, src[k], want)
+		}
+	}
+	// Each value is still checked at its defaults path.
+	decodeErr(t, strings.Replace(both, "app_id: 1", "app_id: one", 1)+gl, "defaults.auth.github_app.app_id: must be a numeric App ID")
+	decodeErr(t, strings.Replace(both, "GL_TOKEN", "glpat-secret", 1)+gl, "defaults.auth.token_env: invalid environment variable name")
+}
+
+// The schema can't see defaults, so it requires only what a repository must
+// set itself; the decoder still requires the effective values.
+func TestEffectiveRequiredKeysAfterDefaults(t *testing.T) {
+	const repo = "  app:\n    url: https://github.com/acme/app\n    mirror: {path: /m/app}\n"
+	// No policy in the repository or in defaults.
+	decodeErr(t, "version: 1\ndefaults:\n  auth: {token_env: T}\nrepositories:\n"+repo, "repositories.app.policy: required")
+	decodeOK(t, "version: 1\ndefaults:\n  auth: {token_env: T}\n  policy: /p.json\nrepositories:\n"+repo)
+	// An App needs app_id and private_key_env once merged.
+	decodeErr(t, "version: 1\ndefaults:\n  policy: /p.json\nrepositories:\n"+repo+"    auth: {github_app: {installation_id: 5}}\n", "repositories.app.auth.github_app.app_id: required")
+	// summary merges like any mapping: limits from defaults, model per repository.
+	models := "version: 1\nmodels: {default: /m.json, big: /b.json}\n"
+	s, _ := decodeOK(t, models+"defaults:\n  auth: {token_env: T}\n  policy: /p.json\n  summary:\n    limits: {max_request_bytes: 1000}\nrepositories:\n"+repo+"    summary: {model: big}\n")
+	if sm := s.Repositories["app"].Summary; sm == nil || sm.Model != "big" || len(sm.Limits) == 0 {
+		t.Fatalf("summary %+v", sm)
+	}
+	decodeErr(t, models+"defaults:\n  auth: {token_env: T}\n  policy: /p.json\n  summary:\n    limits: {max_request_bytes: 1000}\nrepositories:\n"+repo, `repositories.app.summary.model: "" is not defined in models`)
+	decodeErr(t, models+"defaults:\n  auth: {token_env: T}\n  policy: /p.json\n  summary: {model: nope}\nrepositories:\n"+repo, `defaults.summary.model: "nope" is not defined in models`)
+}
+
+func TestSchemaRequiresOnlyRepositoryOwnKeys(t *testing.T) {
+	var schema map[string]any
+	if e := json.Unmarshal(Schema(), &schema); e != nil {
+		t.Fatal(e)
+	}
+	get := func(path ...string) map[string]any {
+		var cur any = schema
+		for _, k := range path {
+			cur = cur.(map[string]any)[k]
+		}
+		return cur.(map[string]any)
+	}
+	repo := get("properties", "repositories", "additionalProperties", "properties")
+	def := get("properties", "defaults", "properties")
+	for name, node := range map[string]map[string]any{
+		"repositories.*.auth.github_app": get("properties", "repositories", "additionalProperties", "properties", "auth", "properties", "github_app"),
+		"repositories.*.github.app":      get("properties", "repositories", "additionalProperties", "properties", "github", "properties", "app"),
+		"repositories.*.summary":         repo["summary"].(map[string]any),
+		"defaults.summary":               def["summary"].(map[string]any),
+	} {
+		if r, ok := node["required"]; ok {
+			t.Errorf("%s requires %v, but defaults or the repository may supply it", name, r)
+		}
+	}
+	if d := get("properties", "defaults", "properties", "auth"); strings.Contains(d["description"].(string), "exactly one") {
+		t.Errorf("defaults.auth description %q: defaults may set both", d["description"])
+	}
+}
+
+// Model configs name the variable holding the key; a key value is never
+// accepted in its place, inline or in a YAML file.
+func TestModelKeyIsAnEnvironmentVariableName(t *testing.T) {
+	indented := "    " + strings.ReplaceAll(strings.TrimSpace(strings.TrimPrefix(modelYAML, "# review model\n")), "\n", "\n    ") + "\n"
+	doc := "version: 1\nmodels:\n  default:\n" + indented + "repositories: {}\n"
+	decodeOK(t, doc)
+	const secret = "sk-ant-api03-AbC/dEf+123"
+	for _, bad := range []string{secret, "$MODEL_KEY", "MODEL KEY"} {
+		_, _, e := DecodeSettings(strings.NewReader(strings.Replace(doc, "api_key_env: MODEL_KEY", "api_key_env: \""+bad+"\"", 1)), "/base")
+		if e == nil || !strings.Contains(e.Error(), "models.default.api_key_env: invalid environment variable name") || strings.Contains(e.Error(), bad) {
+			t.Errorf("api_key_env %q: %v", bad, e)
+		}
+	}
+	decodeErr(t, strings.Replace(doc, "api_key_env: MODEL_KEY", "api_key: "+secret, 1), `models.default.api_key: unknown key; did you mean "api_key_env"?`)
+	dir := t.TempDir()
+	_, e := LoadModelConfig(writeFile(t, dir, "m.yaml", strings.Replace(modelYAML, "api_key_env: MODEL_KEY", "api_key_env: "+secret, 1)))
+	if e == nil || !strings.Contains(e.Error(), "api_key_env: invalid environment variable name") || strings.Contains(e.Error(), secret) {
+		t.Errorf("YAML model file: %v", e)
+	}
+	// Custom tags are refused in model and policy files, as in changeharbor.yaml.
+	if _, e := LoadModelConfig(writeFile(t, dir, "t.yaml", strings.Replace(modelYAML, "model: your-model", "model: !secret your-model", 1))); e == nil || !strings.Contains(e.Error(), "unsupported YAML tag") {
+		t.Errorf("tagged model file: %v", e)
+	}
+	if _, e := LoadPolicy(writeFile(t, dir, "t.yaml", strings.Replace(policyYAML, "base_minimum: 1", "base_minimum: !int 1", 1))); e == nil || !strings.Contains(e.Error(), "unsupported YAML tag") {
+		t.Errorf("tagged policy file: %v", e)
+	}
+}
+
+// A line comment on a flow mapping or sequence stays with its key when the
+// migration turns it into block style.
+func TestMigrateLayoutKeepsFlowLineComments(t *testing.T) {
+	in := `version: 1
+repositories:
+  app:
+    url: https://gitlab.com/group/app
+    token_env: T
+    mirror: {path: /m/app}  # the mirror
+    policy: /p.json
+    review:
+      exclude: [vendor/**]  # vendored code
+  web:
+    url: https://gitlab.com/group/web
+    auth: {token_env: T}
+    mirror: {path: /m/web}
+    policy: /p.json
+`
+	out, _, e := MigrateLayout([]byte(in))
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.Contains(l, "# the mirror") && !strings.Contains(l, "mirror:") || strings.Contains(l, "# vendored code") && !strings.Contains(l, "exclude:") {
+			t.Fatalf("comment moved to %q:\n%s", l, out)
+		}
+	}
+	for _, c := range []string{"# the mirror", "# vendored code"} {
+		if !strings.Contains(string(out), c) {
+			t.Fatalf("comment %q lost:\n%s", c, out)
+		}
+	}
+}

@@ -214,7 +214,9 @@ func TestSchemaNoLongerRequiresTokenEnv(t *testing.T) {
 	}
 	req := schema.Properties.Repositories.AdditionalProperties.Required
 	slices.Sort(req)
-	if !slices.Equal(req, []string{"mirror", "policy", "url"}) {
+	// policy can come from defaults, so only the decoder requires it
+	// (TestEffectiveRequiredKeysAfterDefaults).
+	if !slices.Equal(req, []string{"mirror", "url"}) {
 		t.Fatalf("repository required keys %v", req)
 	}
 }
