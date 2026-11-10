@@ -294,8 +294,8 @@ With `max_attempts: 2` a reply is retried only when the provider explicitly
 rejects the request (429, 503, and 529 for Anthropic). A request whose
 outcome is unknown, such as a timeout, is never replayed. Each completed
 request, attempt and usage figure is stored in the state directory, and
-re-reviewing an unchanged commit reuses the stored reply instead of paying
-again.
+an automatic re-review of an unchanged commit reuses the stored reply
+instead of paying again. A review command always makes a fresh request.
 
 The service gives each job five minutes in total, so keep `timeout` under
 that.

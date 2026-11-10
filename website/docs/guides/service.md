@@ -80,11 +80,22 @@ review.
 A comment whose first line is exactly `@<bot_username> review` reviews the
 change's current head again, drafts and skip rules included. On GitHub,
 `/changeharbor review` also works. Later lines are ignored, so you can add a
-reason. The comment's author needs write access: GitHub owner, member or
-collaborator, or GitLab Developer or above. Other comments, and the bot's own,
+reason. The comment's author needs write access: on GitHub the Write,
+Maintain or Admin role on the repository (or a custom role based on Write),
+read from the repository permission API rather than the comment's
+association; on GitLab Developer or above. Other comments, and the bot's own,
 are ignored silently; every decision is recorded in state as
 `review_command`. A command is never dropped in favour of a newer event for
 the same change.
+
+A command is an explicit retry: it always makes a fresh model request, even
+for a commit whose earlier request failed, timed out or was rejected, and
+even if that commit was already reviewed. The command's comment ID is part
+of the request's identity and is recorded with the run. Nothing else repeats
+a request: an automatic event for an unchanged head reuses the earlier reply,
+an earlier request whose outcome is unknown is never replayed by an event or
+by the service retrying a job, and a re-delivered command comment makes no
+second request. Each command is billed like any review.
 
 The bot's username comes from `bot_username` or the lock, where
 `reviewd config resolve` records it (`<slug>[bot]` for a GitHub App). A

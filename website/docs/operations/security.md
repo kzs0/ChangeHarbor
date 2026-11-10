@@ -46,14 +46,16 @@ trigger GitLab quick actions, mentions or markup. Status comments contain
 only reason codes and validated host facts. ChangeHarbor never edits a
 comment someone else wrote.
 
-Review commands need write-level access (GitHub owner, organization member
-or collaborator; GitLab Developer or above), and the command only causes a
-review that pushing a commit would have caused anyway. The bot's own
-comments never trigger it.
+Review commands need write-level access (on GitHub the Write, Maintain or
+Admin role, read from the repository permission API rather than the
+comment's `author_association`; GitLab Developer or above). A command causes
+one review of the current head, with one fresh model request; a re-delivered
+command comment causes none. The bot's own comments never trigger it.
 
 Every write is recorded before it's sent. An unclear outcome is reconciled
 by reading the forge, never retried blindly. The same goes for model
-requests: one whose outcome is unknown is never replayed.
+requests: one whose outcome is unknown is never replayed. A review command
+is a new request with its own identity, not a replay.
 
 ## Credentials and privilege
 

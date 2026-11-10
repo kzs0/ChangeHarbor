@@ -581,7 +581,7 @@ func processEvent(ctx context.Context, c serverConfig, j jobs.Job, b []byte) err
 		if e := revalidateEvent(ctx, c, *forge, event.ChangeNumber); e != nil {
 			return e
 		}
-		return automateChange(ctx, c, o, *forge, event.ChangeNumber, j.Attempts, false)
+		return automateChange(ctx, c, o, *forge, event.ChangeNumber, j.Attempts, "")
 	}
 	if event.Kind != "review" {
 		return errors.New("unsupported durable job kind")
@@ -675,13 +675,15 @@ const serviceMaxAttempts = 2
 // automateChange runs the forge flow for one change under the service's
 // state lock: review from API-captured revisions (the webhook only names the
 // change), then comment and publish as the forge configuration allows.
-// Unless force is set (a review command), review.auto may skip the change.
-func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc forgeConfig, number, attempts int, force bool) error {
+// Unless commandID names an accepted review command, review.auto may skip
+// the change. A command's ID is part of the review's input identity, so it
+// is a fresh model request rather than a replay of an earlier one.
+func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc forgeConfig, number, attempts int, commandID string) error {
 	if number <= 0 {
 		return errors.New("event has no change number")
 	}
 	key := fmt.Sprintf("%s:%s:%d", fc.Provider, fc.RepositoryID, number)
-	if !force {
+	if commandID == "" {
 		facts, head, e := liveFacts(ctx, fc, number)
 		if e != nil {
 			return e
@@ -691,7 +693,7 @@ func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc 
 			return saveRecord(ctx, c.State, "review_skip", key, struct{ Reason, Head string }{reason, head})
 		}
 	}
-	id, result, _, e := forgeReview(ctx, fc, changeURL(fc, number), reviewOptions{State: c.State, Response: o.Response, ModelConfig: o.ModelConfig, Minimum: 1, Threshold: 3})
+	id, result, _, e := forgeReview(ctx, fc, changeURL(fc, number), reviewOptions{State: c.State, Response: o.Response, ModelConfig: o.ModelConfig, Minimum: 1, Threshold: 3, CommandID: commandID})
 	if e != nil {
 		var f *reviewFailure
 		if errors.As(e, &f) && attempts >= serviceMaxAttempts && fc.CommentMode == "post" {
@@ -783,7 +785,7 @@ func reviewCommandEvent(ctx context.Context, c serverConfig, o repositoryConfig,
 	if e = revalidateEvent(ctx, c, *fc, event.ChangeNumber); e != nil {
 		return e
 	}
-	return automateChange(ctx, c, o, *fc, event.ChangeNumber, j.Attempts, true)
+	return automateChange(ctx, c, o, *fc, event.ChangeNumber, j.Attempts, event.CommentID)
 }
 
 // commandRejection returns why a review command is ignored, or "".

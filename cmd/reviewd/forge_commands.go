@@ -133,6 +133,10 @@ type forgeCapture struct {
 type forgeProvenance struct {
 	Capture                                   forgeCapture
 	ConfigDigest, PolicyDigest, PackageDigest string
+	// CommandID is the forge comment or note ID of the authorised review
+	// command that asked for this run, "" for automatic runs. It is part
+	// of the input identity, so a command is a fresh model request.
+	CommandID string `json:",omitempty"`
 }
 
 func loadForgeConfig(path string) (forgeConfig, error) {
@@ -525,6 +529,9 @@ func forgeReviewCommand(ctx context.Context, args []string) (int, error) {
 type reviewOptions struct {
 	State, Response, ModelConfig string
 	Minimum, Threshold, Cap      int
+	// CommandID is the comment or note ID of an accepted review command,
+	// "" otherwise (see forgeProvenance.CommandID).
+	CommandID string
 }
 
 // reviewFailure is an operational failure after the change was captured:
@@ -595,7 +602,7 @@ func forgeReview(ctx context.Context, c forgeConfig, raw string, o reviewOptions
 	if e != nil {
 		return fail(2, e)
 	}
-	prov := forgeProvenance{Capture: captured, ConfigDigest: forgeConfigDigest(c), PolicyDigest: pd}
+	prov := forgeProvenance{Capture: captured, ConfigDigest: forgeConfigDigest(c), PolicyDigest: pd, CommandID: o.CommandID}
 	inputID := identityID(prov)
 	runID := identityID(struct {
 		Input string

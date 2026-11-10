@@ -26,7 +26,7 @@ the forge's own protections allow it.
 | `reviews.auto_review.labels: ["!label"]` | `review.auto.skip_labels` | Skip labels only; there's no "review only with this label". |
 | Skipping bot authors | `review.auto.ignore_authors` | `*` wildcards, e.g. `renovate*`. |
 | `auto_review.base_branches` | `branch` | One target branch per repository, the default branch unless set. A repository can appear only once in the file. |
-| `@coderabbitai review` | `@<bot_username> review`, or `/changeharbor review` on GitHub | Must be the comment's first line, from someone with write access. Bypasses `review.auto`. |
+| `@coderabbitai review` | `@<bot_username> review`, or `/changeharbor review` on GitHub | Must be the comment's first line, from someone with write access. Bypasses `review.auto` and always makes a fresh model request. |
 | `@coderabbitai full review`, `pause`, `resume`, `ignore`, `resolve` and other commands | Not supported | `review` is the only command. Use `review.auto.skip_labels` to pause a PR. |
 | Chat (replying to the bot) | Not supported | Replies to ChangeHarbor's comments are ignored. |
 | Learnings and knowledge base | Not supported | Put durable guidance in `review.instructions` instead; it's reviewed like any other config change. |
@@ -132,7 +132,8 @@ Compared with CodeRabbit today, ChangeHarbor has no:
 - chat, follow-up questions or replies to its comments;
 - learnings, or memory of past reviews beyond the change itself;
 - incremental reviews: every review covers the whole diff against the
-  target, though re-reviewing an unchanged commit reuses the earlier reply;
+  target, though an automatic re-review of an unchanged commit reuses the
+  earlier reply (a review command asks for a fresh one);
 - linters, static analysis or security scanners; it never runs code from the
   repository;
 - issue-tracker context (Jira, Linear, linked issues);
