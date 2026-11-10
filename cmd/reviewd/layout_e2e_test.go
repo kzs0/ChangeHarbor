@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -687,5 +688,37 @@ func TestLayoutMigrateLayoutRoundTrip(t *testing.T) {
 	}
 	if code, _, _ := runCLI(t, "config", "migrate", "--layout", "--forge-config", u.config); code != 2 {
 		t.Fatal("--layout with --forge-config accepted")
+	}
+}
+
+// A command that loads the file more than once (serve reloads it per
+// request) prints each warning once; the next command prints it again.
+func TestLayoutWarningsPrintOncePerCommand(t *testing.T) {
+	u := newUnified(t, nil) // token_env at the repository level
+	// capture runs f as one command: under the CLI lock, after a reset.
+	capture := func(f func()) string {
+		cliMu.Lock()
+		defer cliMu.Unlock()
+		resetWarnings()
+		old := os.Stderr
+		r, w, _ := os.Pipe()
+		os.Stderr = w
+		done := make(chan string)
+		go func() { b, _ := io.ReadAll(r); done <- string(b) }()
+		f()
+		w.Close()
+		os.Stderr = old
+		return <-done
+	}
+	load := func() {
+		if _, _, e := loadSettingsFile(u.path); e != nil {
+			t.Error(e)
+		}
+	}
+	if w := warningLines(capture(func() { load(); load(); load() })); len(w) != 1 {
+		t.Fatalf("three loads printed %q", w)
+	}
+	if w := warningLines(capture(load)); len(w) != 1 {
+		t.Fatalf("after reset printed %q", w)
 	}
 }
