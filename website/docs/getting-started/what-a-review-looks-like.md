@@ -169,7 +169,7 @@ Commit: `4f9a1c2e8b7d` · Status: `input_incomplete` · Reason: `required_input_
 
 This change was not reviewed. The diff is too large for the model's request budget, so nothing was sent to the model.
 
-What to do: split the change, leave generated or vendored files out with `review.exclude`, set `review.large_changes: partial` to review as many files as fit, or use a model with a larger context window.
+What to do: split the change, leave generated or vendored files out with `review.exclude`, set `review.large_changes: partial` to review as many files as fit, or use a model with a larger context window. Commenting a review command will not help until the change or the configuration changes.
 
 No approval was given. Inline comments from earlier reviews were left unchanged.
 ````
@@ -185,11 +185,18 @@ The other reasons use the same layout:
 | `mirror_unavailable` | `review_failed` | The review could not be completed. The local mirror could not provide the change's commits. |
 | `internal_error` | `review_failed` | The review could not be completed. An internal error occurred. |
 
+For the first two, *What to do* ends with "Commenting a review command will
+not help until the change or the configuration changes": the same input
+would be refused again.
+
 For the last four, *What to do* reads "comment `@changeharbor review` to try
-again, or push a new commit" (with your bot's username), or "push a new
-commit to try again" when the username isn't known. It also tells operators
-where to look: `reviewd explain --run RUN_ID` for rejected output, the run ID
-for the others.
+again, or push a new commit" (with your bot's username). When the username
+isn't known it reads "comment `/changeharbor review` to try again, or push a
+new commit" on GitHub and "push a new commit to try again" on GitLab. A
+review command always makes a fresh model request, even for a commit whose
+earlier request failed or was rejected. It also tells operators where to
+look: `reviewd explain --run RUN_ID` for rejected output, the run ID for the
+others.
 
 `review_failed` comments come only from the service, after the job's last
 attempt fails, and only with `publish.comments: post`.

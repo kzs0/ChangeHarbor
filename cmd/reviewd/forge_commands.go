@@ -1080,7 +1080,7 @@ func summaryComment(ctx context.Context, c forgeConfig, s *storage.Store, runID,
 	var body string
 	if reason, ok := statusReason(r); ok {
 		var e error
-		body, e = publish.RenderStatus(publish.StatusContent{ChangeKey: key, RunID: runID, Head: p.Capture.Head, Status: r.Status, Reason: reason, BotUsername: c.BotUsername})
+		body, e = publish.RenderStatus(publish.StatusContent{ChangeKey: key, RunID: runID, Head: p.Capture.Head, Status: r.Status, Reason: reason, BotUsername: c.BotUsername, Provider: c.Provider})
 		if e != nil {
 			return publish.CommentPublication{}, 1, e
 		}

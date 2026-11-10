@@ -723,7 +723,7 @@ func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc 
 // failureComment publishes a review_failed status comment for the final
 // failed attempt. It renders only the reason code, never the error.
 func failureComment(ctx context.Context, c serverConfig, fc forgeConfig, key string, f *reviewFailure) error {
-	body, e := publish.RenderStatus(publish.StatusContent{ChangeKey: key, RunID: f.RunID, Head: f.Capture.Head, Status: "review_failed", Reason: f.Reason, BotUsername: fc.BotUsername})
+	body, e := publish.RenderStatus(publish.StatusContent{ChangeKey: key, RunID: f.RunID, Head: f.Capture.Head, Status: "review_failed", Reason: f.Reason, BotUsername: fc.BotUsername, Provider: fc.Provider})
 	if e != nil {
 		return e
 	}

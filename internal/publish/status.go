@@ -17,6 +17,9 @@ func ValidBotUsername(u string) bool { return len(u) <= 255 && BotUsernamePatter
 // StatusContent holds the host facts of a review that did not complete.
 type StatusContent struct {
 	ChangeKey, RunID, Head, Status, Reason, BotUsername string
+	// Provider is "", "github" or "gitlab". Without a bot username, a
+	// GitHub retry hint names the `/changeharbor review` command.
+	Provider string
 }
 
 type statusWording struct{ what, why, todo string }
@@ -25,15 +28,17 @@ const (
 	notReviewed  = "This change was not reviewed."
 	notCompleted = "The review could not be completed."
 	retryMarker  = "{retry}"
+	// noRetry ends the hint of a reason a fresh attempt cannot change.
+	noRetry = " Commenting a review command will not help until the change or the configuration changes."
 )
 
 var statusReasons = map[string]statusWording{
 	"required_input_omitted": {notReviewed,
 		"The diff is too large for the model's request budget, so nothing was sent to the model.",
-		"split the change, leave generated or vendored files out with `review.exclude`, set `review.large_changes: partial` to review as many files as fit, or use a model with a larger context window."},
+		"split the change, leave generated or vendored files out with `review.exclude`, set `review.large_changes: partial` to review as many files as fit, or use a model with a larger context window." + noRetry},
 	"all_changes_excluded_by_trusted_policy": {notReviewed,
 		"Every changed file matches `review.exclude`, so there was nothing to send to the model.",
-		"nothing, if that is intended. Otherwise narrow `review.exclude`."},
+		"nothing, if that is intended. Otherwise narrow `review.exclude`." + noRetry},
 	"invalid_output": {"The model's reply was rejected.",
 		"It did not pass validation (for example, a finding pointed outside the changed lines), so none of it is shown here.",
 		retryMarker + ". Operators can inspect the run with `reviewd explain --run {run}`."},
@@ -63,9 +68,15 @@ func RenderStatus(c StatusContent) (string, error) {
 	if c.BotUsername != "" && !ValidBotUsername(c.BotUsername) {
 		return "", errors.New("invalid bot username")
 	}
+	if c.Provider != "" && c.Provider != "github" && c.Provider != "gitlab" {
+		return "", errors.New("unknown status comment provider")
+	}
 	retry := "push a new commit to try again"
-	if c.BotUsername != "" {
+	switch {
+	case c.BotUsername != "":
 		retry = "comment `@" + c.BotUsername + " review` to try again, or push a new commit"
+	case c.Provider == "github":
+		retry = "comment `/changeharbor review` to try again, or push a new commit"
 	}
 	todo := strings.ReplaceAll(w.todo, "{run}", c.RunID)
 	if strings.HasPrefix(todo, retryMarker) {
