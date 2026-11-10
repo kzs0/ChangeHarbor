@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -209,7 +210,7 @@ func TestFetchURLRejectsUnsafeArguments(t *testing.T) {
 
 // smartHTTPServer serves bare repositories under root over loopback HTTP,
 // requiring Basic user:token when token is non-empty.
-func smartHTTPServer(t *testing.T, root, user, token string) (*httptest.Server, *int) {
+func smartHTTPServer(t *testing.T, root, user, token string) (*httptest.Server, *atomic.Int64) {
 	out, e := exec.Command("git", "--exec-path").Output()
 	if e != nil {
 		t.Skip(e)
@@ -219,14 +220,12 @@ func smartHTTPServer(t *testing.T, root, user, token string) (*httptest.Server, 
 		t.Skip("git http-backend unavailable")
 	}
 	h := &cgi.Handler{Path: backend, Root: "/", Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1"}}
-	rejected := new(int)
-	var mu sync.Mutex
+	// rejected is read by the test while later requests may still write it.
+	rejected := new(atomic.Int64)
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+token))
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if token != "" && r.Header.Get("Authorization") != want {
-			mu.Lock()
-			*rejected++
-			mu.Unlock()
+			rejected.Add(1)
 			w.Header().Set("WWW-Authenticate", `Basic realm="unit"`)
 			w.WriteHeader(401)
 			return
@@ -251,7 +250,7 @@ func TestCloneMirrorAndFetchURLOverSmartHTTP(t *testing.T) {
 	rec := recordCommands(t)
 	mirror := filepath.Join(t.TempDir(), "mirrors", "app.git")
 	if e := CloneMirror(context.Background(), auth, mirror); e != nil {
-		t.Fatalf("clone: %v (rejected %d)", e, *rejected)
+		t.Fatalf("clone: %v (rejected %d)", e, rejected.Load())
 	}
 	os.WriteFile(filepath.Join(src, "a"), []byte("2"), 0600)
 	gitIn(t, src, "commit", "-am", "2")
@@ -264,8 +263,8 @@ func TestCloneMirrorAndFetchURLOverSmartHTTP(t *testing.T) {
 	if got, e := r.Resolve(context.Background(), "refs/pull/1/head"); e != nil || got != head {
 		t.Fatalf("fetched %s %v", got, e)
 	}
-	if *rejected != 0 {
-		t.Fatalf("%d unauthenticated requests", *rejected)
+	if n := rejected.Load(); n != 0 {
+		t.Fatalf("%d unauthenticated requests", n)
 	}
 	if got := gitIn(t, mirror, "config", "--get", "remote.origin.url"); got != auth.URL {
 		t.Fatalf("origin %q", got)
