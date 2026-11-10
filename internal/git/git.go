@@ -48,12 +48,30 @@ func (r Reader) run(ctx context.Context, args ...string) ([]byte, error) {
 // commandHook, when set (tests only), sees every git command before it runs.
 var commandHook func(*exec.Cmd)
 
-// inheritedConfig reports environment entries that would inject git
-// configuration or templates from outside the trusted call site.
-func inheritedConfig(kv string) bool {
-	k, _, _ := strings.Cut(kv, "=")
-	return k == "GIT_CONFIG_COUNT" || k == "GIT_CONFIG_PARAMETERS" || k == "GIT_TEMPLATE_DIR" ||
-		strings.HasPrefix(k, "GIT_CONFIG_KEY_") || strings.HasPrefix(k, "GIT_CONFIG_VALUE_")
+// SafeEnviron returns environ without entries that would inject git
+// configuration or templates from outside the trusted call site, or turn on
+// git's trace and debug output (which can write the Authorization header or
+// other request data to stderr or files) or disable TLS verification. Keys
+// compare exactly and case-sensitively; order is kept; entries without "="
+// are kept.
+func SafeEnviron(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		k, _, ok := strings.Cut(kv, "=")
+		if ok && unsafeGitKey(k) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+func unsafeGitKey(k string) bool {
+	switch k {
+	case "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_TEMPLATE_DIR", "GIT_CURL_VERBOSE", "GIT_REDACT_COOKIES", "GIT_SSL_NO_VERIFY":
+		return true
+	}
+	return strings.HasPrefix(k, "GIT_CONFIG_KEY_") || strings.HasPrefix(k, "GIT_CONFIG_VALUE_") || strings.HasPrefix(k, "GIT_TRACE")
 }
 
 // runEnv is run with extra environment entries (GIT_CONFIG_* from HTTPAuth).
@@ -68,13 +86,7 @@ func (r Reader) runEnv(ctx context.Context, extra []string, args ...string) ([]b
 	base := []string{"--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.fsmonitor=false", "-c", "core.pager=cat"}
 	c := exec.CommandContext(ctx, "git", append(base, args...)...)
 	c.Dir = r.Repo
-	env := []string{}
-	for _, kv := range os.Environ() {
-		if !inheritedConfig(kv) {
-			env = append(env, kv)
-		}
-	}
-	c.Env = append(append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"), extra...)
+	c.Env = append(append(SafeEnviron(os.Environ()), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"), extra...)
 	out := &bounded{limit: limit}
 	stderr := &bounded{limit: 4096}
 	c.Stdout = out

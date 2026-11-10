@@ -54,7 +54,7 @@ func (b *output) Write(p []byte) (int, error) {
 func tree(ctx context.Context, repo, commit string, max int) ([]byte, error) {
 	c := exec.CommandContext(ctx, "git", "--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "ls-tree", "-rz", "--full-tree", commit, "--")
 	c.Dir = repo
-	c.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0")
+	c.Env = append(gitreader.SafeEnviron(os.Environ()), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0")
 	b := &output{max: max}
 	c.Stdout = b
 	c.Stderr = &output{max: 4096}

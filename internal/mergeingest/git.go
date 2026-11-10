@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	gitenv "github.com/kzs0/reviewd/internal/git"
 	"github.com/kzs0/reviewd/internal/journal"
 	"github.com/kzs0/reviewd/internal/storage"
 	"os"
@@ -41,7 +42,7 @@ func readGit(ctx context.Context, path string, max int, args ...string) ([]byte,
 	}
 	c := exec.CommandContext(ctx, "git", append([]string{"--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "core.pager=cat"}, args...)...)
 	c.Dir = path
-	c.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
+	c.Env = append(gitenv.SafeEnviron(os.Environ()), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	out := &capped{max: max}
 	c.Stdout = out
 	c.Stderr = &capped{max: 4096}
