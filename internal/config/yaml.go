@@ -19,6 +19,15 @@ import (
 // merge keys, custom tags, duplicate keys and multiple documents. JSON is a
 // subset of YAML and passes through unchanged.
 func yamlToJSON(raw []byte, typ reflect.Type) ([]byte, error) {
+	return yamlToJSONWith(raw, typ, nil)
+}
+
+// typeHook overrides the target type at a path: it returns the type to
+// convert the node with, or an error for a node of the wrong kind. ok is
+// false when the path has no override.
+type typeHook func(path string, n *yaml.Node) (t reflect.Type, ok bool, err error)
+
+func yamlToJSONWith(raw []byte, typ reflect.Type, hook typeHook) ([]byte, error) {
 	d := yaml.NewDecoder(bytes.NewReader(raw))
 	var doc yaml.Node
 	if e := d.Decode(&doc); e != nil {
@@ -31,7 +40,7 @@ func yamlToJSON(raw []byte, typ reflect.Type) ([]byte, error) {
 	if e := d.Decode(&extra); !errors.Is(e, io.EOF) {
 		return nil, errors.New("expected exactly one YAML document")
 	}
-	v, e := convert(&doc, typ, "")
+	v, e := converter{hook}.convert(&doc, typ, "")
 	if e != nil {
 		return nil, e
 	}
@@ -47,7 +56,9 @@ func label(path string) string {
 
 var standardTags = map[string]bool{"!!str": true, "!!int": true, "!!float": true, "!!bool": true, "!!null": true, "!!timestamp": true, "!!map": true, "!!seq": true}
 
-func convert(n *yaml.Node, t reflect.Type, path string) (any, error) {
+type converter struct{ hook typeHook }
+
+func (c converter) convert(n *yaml.Node, t reflect.Type, path string) (any, error) {
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -60,12 +71,23 @@ func convert(n *yaml.Node, t reflect.Type, path string) (any, error) {
 	if n.Tag != "" && !standardTags[n.Tag] && n.Tag != "!!merge" {
 		return nil, fmt.Errorf("%s: unsupported YAML tag %s (line %d)", label(path), n.Tag, n.Line)
 	}
+	if c.hook != nil && n.Kind != yaml.DocumentNode {
+		ht, ok, e := c.hook(path, n)
+		if e != nil {
+			return nil, e
+		}
+		if ok {
+			for t = ht; t != nil && t.Kind() == reflect.Pointer; {
+				t = t.Elem()
+			}
+		}
+	}
 	switch n.Kind {
 	case yaml.DocumentNode:
 		if len(n.Content) != 1 {
 			return nil, errors.New("empty document")
 		}
-		return convert(n.Content[0], t, path)
+		return c.convert(n.Content[0], t, path)
 	case yaml.MappingNode:
 		out := map[string]any{}
 		lines := map[string]int{}
@@ -98,7 +120,7 @@ func convert(n *yaml.Node, t reflect.Type, path string) (any, error) {
 					ft = t.Elem()
 				}
 			}
-			cv, e := convert(v, ft, child)
+			cv, e := c.convert(v, ft, child)
 			if e != nil {
 				return nil, e
 			}
@@ -111,8 +133,8 @@ func convert(n *yaml.Node, t reflect.Type, path string) (any, error) {
 			elem = t.Elem()
 		}
 		out := []any{}
-		for i, c := range n.Content {
-			cv, e := convert(c, elem, fmt.Sprintf("%s[%d]", label(path), i))
+		for i, item := range n.Content {
+			cv, e := c.convert(item, elem, fmt.Sprintf("%s[%d]", label(path), i))
 			if e != nil {
 				return nil, e
 			}
