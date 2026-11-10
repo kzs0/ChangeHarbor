@@ -517,3 +517,162 @@ Unit: `cmd/reviewd/feedback_test.go`, `internal/worker/triggers_test.go`,
 The existing `TestSchemaCoversEverySettingsKey` and
 `TestDocsReferenceCoversEveryKey` also fail until the schema and
 `website/docs/configuration/reference.md` document the new keys.
+
+## Addendum: explicit retries, permission-based GitHub commands, git debug variables
+
+### A1. A review command is an explicit retry
+
+Problem: model claims (`internal/model/http.go`) are keyed by input
+identity. After `model_request_failed` the claim stays `pending`, so a
+review command on the same head failed with "previous request completion
+uncertain" without calling the model; after `invalid_output` the completed
+(rejected) reply was reused. The status comment's retry hint only worked
+after a new commit.
+
+Rule (specification: "Optional retry of the identical request must be
+explicitly configured and counted"): an *authorised review command* is that
+explicit, counted request. Nothing else is.
+
+- `reviewOptions` gains `CommandID string`: the forge comment/note ID of an
+  accepted review command (`worker.Event.CommentID`), `""` otherwise.
+- `forgeProvenance` gains `CommandID string` with `json:",omitempty"`.
+  `forgeReview` sets `prov.CommandID = o.CommandID` **before** computing
+  `inputID := identityID(prov)` and before building the `forge_identity`
+  item. So:
+  - a command run's model request identity (and claim key) differs from the
+    automatic run's and from every other command's: it is a new request,
+    never a replay of an ambiguous or rejected one;
+  - it is recorded: the saved `review_provenance` of the run carries
+    `"CommandID":"<id>"`;
+  - automatic runs marshal exactly as before (`omitempty`), so their
+    identity, claims and reuse are unchanged.
+- `automateChange(ctx, c, o, fc, number, attempts int, commandID string)`
+  replaces the `force bool` parameter: `review.auto` is bypassed iff
+  `commandID != ""`, and `commandID` is passed on as `reviewOptions.CommandID`.
+  `reviewCommandEvent` passes `event.CommentID`; the event path passes `""`.
+
+Consequences, all asserted by tests:
+
+| Situation | Model calls |
+| --- | --- |
+| automatic event, same head, after a completed reply (valid or rejected) | 0, reply reused (unchanged) |
+| automatic event or service retry, same head, after `model_request_failed` | 0, fails "completion uncertain" (unchanged; ambiguity is never bypassed automatically) |
+| service retry (attempt 2) of a *command* job whose model call failed | 0, same command identity, still pending |
+| re-delivery of the same command comment (new job ID, same comment ID) | 0, the command's claim is reused (or still pending) |
+| a new authorised command (new comment ID) | 1, fresh request |
+
+A command on a head whose automatic review already completed also makes a
+fresh request (the human asked for one). Section 4's sentence "the second
+review of an unchanged head reuses the first's model reply" now holds only
+between automatic events. `reviewd review --url` is unchanged.
+
+### A2. Retry hints per reason
+
+`publish.StatusContent` gains `Provider string` (`""`, `github` or `gitlab`;
+anything else is an error). `summaryComment` and `failureComment` pass
+`c.Provider`.
+
+`{retry}` (retryable reasons `invalid_output`, `model_request_failed`,
+`mirror_unavailable`, `internal_error`) is:
+
+- bot username known: ``comment `@{bot} review` to try again, or push a new commit`` (unchanged);
+- else on GitHub: ``comment `/changeharbor review` to try again, or push a new commit``;
+- else: `push a new commit to try again` (unchanged).
+
+Non-retryable reasons (`required_input_omitted`,
+`all_changes_excluded_by_trusted_policy`) never mention a review command or
+"try again". Their todo text gets one more sentence appended:
+`Commenting a review command will not help until the change or the configuration changes.`
+
+Phrases tests rely on: `will not help until the change or the configuration changes`
+(and the absence of `to try again` and of `` `@reviewd-bot review` `` for
+those two reasons), `` `@reviewd-bot review` to try again `` and
+`` `/changeharbor review` to try again ``.
+
+### A3. GitHub commands are authorised by repository permission
+
+`author_association` is not reliable (it can read `CONTRIBUTOR` or `NONE`
+for a private organisation member when seen with an installation token),
+and is no longer used for authorisation. The comment's body, author ID and
+login still come from `GET /repos/{owner}/{repo}/issues/comments/{id}`.
+
+After `not_a_command` (so ordinary comments cost no extra request), GitHub
+step 5 becomes:
+
+1. `gh.ValidLogin(x.AuthorLogin)` false: `unauthorized`, no request.
+   `ValidLogin` matches `^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$`.
+2. `GET /repos/{owner}/{repo}/collaborators/{login}/permission` through
+   `(*Client).CollaboratorPermission`. 404: not a collaborator, `unauthorized`.
+   Any other error fails the job (retried) as today.
+3. `githubPermissionAuthorized(p.Permission, p.RoleName)` false: `unauthorized`.
+
+```go
+// internal/forge/github
+type Permission struct{ Permission, RoleName, Login string }
+func ValidLogin(login string) bool
+func (c *Client) CollaboratorPermission(ctx context.Context, owner, repo, login string) (Permission, error)
+// cmd/reviewd
+func githubPermissionAuthorized(permission, roleName string) bool
+```
+
+- `CollaboratorPermission` validates `owner`/`repo` like other calls and
+  `login` with `ValidLogin` before any request (invalid: error, no request).
+  It decodes `permission`, `role_name` and `user.login`. A 404 returns
+  `Permission{}, nil`. A 200 whose `user.login` differs from `login`
+  (case-insensitive compare) or whose `permission` is empty is an error.
+- `githubPermissionAuthorized` is true iff `permission` is exactly `admin` or
+  `write` **and** `roleName` is not exactly `read`, `triage` or `none`.
+  `permission` is GitHub's base level (it already maps `maintain` to
+  `write`, and a custom role to its base); `role_name` (`admin`, `maintain`,
+  `write`, `triage`, `read` or a custom role name; absent on some GitHub
+  Enterprise Server versions, then `""`) can only veto. So `admin`/`admin`,
+  `write`/`maintain`, `write`/`write`, `write`/<custom>, `write`/`""` are
+  authorised; `read`/*, `none`/*, `write`/`triage` are not.
+- `commandAuthorized` keeps its signature and table (GitLab still uses it);
+  the service no longer calls it for GitHub.
+- GitHub App permission: this endpoint needs **Metadata: read** on the
+  repository (every App installation has it); no extra permission is
+  requested. For a classic token it needs `repo` (or `public_repo`) scope.
+  `doctor` does not check it.
+
+### A4. Git debug variables are never inherited
+
+Inherited `GIT_TRACE*` (including `GIT_TRACE_CURL`, `GIT_TRACE_PACKET`,
+`GIT_TRACE2*` and `GIT_TRACE_REDACT`), `GIT_CURL_VERBOSE`,
+`GIT_REDACT_COOKIES` and `GIT_SSL_NO_VERIFY` can write the Authorization
+header (or other request data) to stderr or files, or disable TLS checks.
+
+```go
+// internal/git
+func SafeEnviron(environ []string) []string
+```
+
+returns `environ` without any entry whose key is `GIT_CONFIG_COUNT`,
+`GIT_CONFIG_PARAMETERS`, `GIT_TEMPLATE_DIR`, `GIT_CURL_VERBOSE`,
+`GIT_REDACT_COOKIES`, `GIT_SSL_NO_VERIFY`, or starts with `GIT_CONFIG_KEY_`,
+`GIT_CONFIG_VALUE_` or `GIT_TRACE` (exact, case-sensitive keys; order kept;
+entries without `=` are kept). Every git command uses it as the inherited
+base: `internal/git` `runEnv` (replacing `inheritedConfig`),
+`internal/mergeingest` `readGit` and `internal/contextbuild` `tree`, each
+then appending its fixed entries (and, in `runEnv`, `HTTPAuth.Env()`).
+With a token, the only environment entry that contains it (base64) is the
+single `GIT_CONFIG_VALUE_n` whose key is `http.<url>.extraHeader`; the raw
+token is in no entry.
+
+### A5. Tests
+
+- E2E: `cmd/reviewd/retry_e2e_test.go` (`TestReviewCommandRetriesAfterModelRequestFailure`,
+  `TestReviewCommandAttemptIsNotReplayedByServiceRetry`,
+  `TestReviewCommandRetriesAfterInvalidOutput`,
+  `TestAutomaticEventReusesCompletedReplyForUnchangedHead`,
+  `TestStatusCommentHintMatchesReason`);
+  `cmd/reviewd/command_permission_e2e_test.go`
+  (`TestGitHubReviewCommandAuthorisedByPermission`). The GitHub PR fake in
+  `feedback_fixtures_test.go` now serves the permission endpoint: from an
+  explicit table when a test sets one, otherwise derived from the API
+  comment's association (`OWNER`/`MEMBER`/`COLLABORATOR` give `write`,
+  others `read`, no comment 404), so existing tests keep their assertions.
+- Unit: `cmd/reviewd/permission_test.go`,
+  `internal/forge/github/permission_test.go`,
+  `internal/publish/retry_hint_test.go`, `internal/git/env_test.go`,
+  `internal/mergeingest/env_test.go`, `internal/contextbuild/env_test.go`.

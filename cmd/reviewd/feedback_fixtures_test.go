@@ -225,7 +225,16 @@ type fakeGitHubPR struct {
 	comments              []map[string]any          // issue comments on the PR
 	byID                  map[string]map[string]any // GET /issues/comments/:id
 	posts, patches, reads int
+	// perms answers GET /collaborators/:login/permission when set (absent
+	// login: 404). When nil, the permission is derived from the API
+	// comment's association: OWNER, MEMBER, COLLABORATOR give write,
+	// others read; a login with no comment gets 404.
+	perms    map[string]ghPermission
+	permGets []string // logins whose permission was read
 }
+
+// ghPermission is a collaborator permission response.
+type ghPermission struct{ permission, role string }
 
 func (f *fakeGitHubPR) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
@@ -275,10 +284,40 @@ func (f *fakeGitHubPR) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		js(c)
+	case r.Method == "GET" && strings.HasPrefix(p, "/repos/owner/repo/collaborators/") && strings.HasSuffix(p, "/permission"):
+		login := strings.TrimSuffix(strings.TrimPrefix(p, "/repos/owner/repo/collaborators/"), "/permission")
+		f.permGets = append(f.permGets, login)
+		perm, ok := f.permission(login)
+		if !ok {
+			w.WriteHeader(404)
+			io.WriteString(w, `{"message":"Not Found"}`)
+			return
+		}
+		js(map[string]any{"permission": perm.permission, "role_name": perm.role, "user": map[string]any{"id": 6, "login": login}})
 	default:
 		f.t.Errorf("unexpected GitHub request %s %s", r.Method, p)
 		w.WriteHeader(404)
 	}
+}
+
+// permission is login's collaborator permission (caller holds f.mu).
+func (f *fakeGitHubPR) permission(login string) (ghPermission, bool) {
+	if f.perms != nil {
+		p, ok := f.perms[login]
+		return p, ok
+	}
+	for _, c := range f.byID {
+		u, _ := c["user"].(map[string]any)
+		if u == nil || !strings.EqualFold(fmt.Sprint(u["login"]), login) {
+			continue
+		}
+		switch c["author_association"] {
+		case "OWNER", "MEMBER", "COLLABORATOR":
+			return ghPermission{"write", "write"}, true
+		}
+		return ghPermission{"read", "read"}, true
+	}
+	return ghPermission{}, false
 }
 
 func (f *fakeGitHubPR) summary(t *testing.T) string {
