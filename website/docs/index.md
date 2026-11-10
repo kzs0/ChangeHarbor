@@ -45,7 +45,7 @@ maps each reason to a fix.
    When the change moves later, ChangeHarbor withdraws its approval.
 
 The service reviews changes as they're opened and updated, skips drafts and
-whatever else `review.auto` says to skip, and reviews again when someone
+whatever else `triggers` says to skip, and reviews again when someone
 comments `@<bot_username> review`.
 
 Every write is off by default. In `shadow` mode ChangeHarbor evaluates

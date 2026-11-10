@@ -68,7 +68,7 @@ five minutes before it expires. Tokens, JWTs and the key stay in memory.
     export GITHUB_TOKEN=github_pat_...
     ```
 
-    In step 6, use `token_env: GITHUB_TOKEN` in place of `github.app`, and
+    In step 6, use `auth.token_env: GITHUB_TOKEN` in place of `auth.github_app`, and
     set `mirror.auth: token` so git clones with the token too. Add
     the webhook in the repository's **Settings → Webhooks** with the same
     URL and secret, content type `application/json`, and the events
@@ -117,11 +117,12 @@ models:
 repositories:
   api:
     url: https://github.com/OWNER/REPO
-    github:
-      app:
+    auth:
+      github_app:
         app_id: 123456
         private_key_env: CHANGEHARBOR_APP_KEY
         # installation_id: 7890123   # optional; config resolve looks it up
+    github:
       required_checks:
         test: "15368"      # check name: producing app ID
         lint: "15368"
@@ -172,7 +173,7 @@ writes on in stages, following the [rollout checklist](rollout.md):
 
 The service reviews a pull request when it's opened, reopened, gets new
 commits, is marked ready for review or is retargeted. Drafts are skipped
-until they're ready, and `review.auto` can skip more (bot authors, labels,
+until they're ready, and `triggers` can skip more (bot authors, labels,
 title keywords). See [Automatic reviews](service.md#automatic-reviews).
 Each push to `main` re-checks earlier approvals and dismisses any whose
 target moved.
@@ -188,8 +189,8 @@ contributor. A command always makes a fresh model request for the current
 head, even if the last review of that commit failed or was rejected.
 
 With a machine user, the `@` form uses the user's login, which
-`config resolve` records. If you set `bot_user_id` yourself, set
-`bot_username` too.
+`config resolve` records. If you set `auth.bot_user_id` yourself, set
+`auth.bot_username` too.
 
 ## Steer and tune the review
 

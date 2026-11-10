@@ -44,7 +44,7 @@ reviewd`. These are the lines worth watching for:
 | Line | Means |
 | --- | --- |
 | `saved forge review: RUN_ID` | A review finished and was saved. Comments and approval follow, per `publish`. |
-| `skipped automatic review of github:812345678:42: draft` | `review.auto` skipped the change. The reason is `draft`, `ignored_author`, `skip_label` or `skip_title_keyword`. |
+| `skipped automatic review of github:812345678:42: draft` | `triggers` skipped the change. The reason is `draft`, `ignored_author`, `skip_label` or `skip_title_keyword`. |
 | `tracked-branch reconciliation incomplete; will retry` | The periodic check of the target branch didn't finish, usually because the forge or the mirror was unreachable. One is noise; a run of them needs a look. |
 | `scheduled context build incomplete; inspect audit records` | Rebuilding the repository context snapshot failed. Reviews still run. |
 | JSON lines with `"msg":"operation.complete"` | Telemetry for background operations. `"success":false` marks a failure; error text is deliberately left out. |
@@ -79,7 +79,8 @@ reviewd review --url https://github.com/acme/api/pull/42 --state /tmp/changeharb
 
 One file holds every repository and one service serves them all. GitHub and
 GitLab repositories can share a file; each forge needs its own webhook
-secret.
+secret. Put what they share under `defaults`; each repository inherits it
+and sets only what differs.
 
 ```yaml
 # changeharbor.yaml
@@ -92,25 +93,25 @@ service:
 models:
   default: models/review.json
   small: models/review-small.json
+defaults:
+  auth:
+    github_app:
+      app_id: 123456
+      private_key_env: CHANGEHARBOR_APP_KEY
+  publish:
+    comments: post
+  triggers:
+    ignore_authors: ["dependabot[bot]", "renovate[bot]"]
 repositories:
   api:
     url: https://github.com/acme/api
-    github:
-      app:
-        app_id: 123456
-        private_key_env: CHANGEHARBOR_APP_KEY
     mirror:
       path: /srv/mirrors/api.git
     policy: policies/api.json
     publish:
-      comments: post
       inline_comments: post
   web:
     url: https://github.com/acme/web
-    github:
-      app:
-        app_id: 123456
-        private_key_env: CHANGEHARBOR_APP_KEY
     mirror:
       path: /srv/mirrors/web.git
     policy: policies/web.json
@@ -119,16 +120,21 @@ repositories:
       exclude: ["dist/**", "package-lock.json"]
   billing:
     url: https://gitlab.com/acme/billing
-    token_env: GITLAB_TOKEN
-    bot_username: changeharbor-bot
+    auth:
+      token_env: GITLAB_TOKEN    # replaces the inherited App
+      bot_username: changeharbor-bot
     mirror:
       path: /srv/mirrors/billing.git
       auth: token
     policy: policies/billing.json
     publish:
-      comments: post
-      approvals: submit
+      approvals: submit          # merged with the inherited comments: post
 ```
+
+Mappings such as `publish` merge with the inherited ones, while a list such
+as `review.exclude` replaces the inherited list. A repository that sets
+`auth.token_env` drops the inherited App. See
+[`defaults`](../configuration/reference.md#defaults) for the full rules.
 
 Each repository can appear only once, and each reviews changes into one
 `branch` (the default branch unless you set it). One GitHub App installation
@@ -154,7 +160,7 @@ redelivers them. GitHub lists failed deliveries under the webhook's
 itself. A push or a review comment brings any change up to date.
 
 Locks written by older versions stay valid. If the release added something
-the lock records (as `bot_username` was added), rerun `reviewd config
+the lock records (as `auth.bot_username` was added), rerun `reviewd config
 resolve` to fill it in.
 
 ## Backups

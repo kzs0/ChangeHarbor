@@ -122,7 +122,8 @@ models:
 repositories:
   app:
     url: https://gitlab.com/group/app
-    token_env: GITLAB_TOKEN
+    auth:
+      token_env: GITLAB_TOKEN
     mirror:
       path: /srv/mirrors/app.git
       auth: token            # clone and fetch with GITLAB_TOKEN
@@ -174,7 +175,8 @@ models:
 repositories:
   app:
     url: https://gitlab.com/group/app
-    token_env: GITLAB_TOKEN
+    auth:
+      token_env: GITLAB_TOKEN
     mirror:
       path: /srv/mirrors/app.git
     policy: policies/app.json
@@ -196,7 +198,8 @@ models:
 repositories:
   app:
     url: https://gitlab.com/group/app
-    token_env: GITLAB_TOKEN
+    auth:
+      token_env: GITLAB_TOKEN
     mirror:
       path: /srv/mirrors/app.git
     policy: policies/app.json
@@ -229,8 +232,8 @@ summary comment says so and what to do. With `review.large_changes: partial`
 the files that fit are reviewed and the rest are listed. Partial reviews are
 never approved.
 
-Changing anything under `review` except `review.auto` invalidates existing
-reviews. The `publish` settings don't.
+Changing anything under `review` invalidates existing reviews. The
+`publish` and `triggers` settings don't.
 
 ## 11. Automate with webhooks
 
@@ -246,7 +249,7 @@ From then on each MR that is opened, reopened, gets new commits, is marked
 ready or is retargeted first has ChangeHarbor's approval of the previous head
 withdrawn, then is reviewed, commented on and (when eligible) approved. Label,
 title and description edits and approvals don't start a review. Drafts are
-skipped until they are ready; `review.auto` can skip more. See
+skipped until they are ready; `triggers` can skip more. See
 [Automatic reviews](service.md#automatic-reviews). Each push to `main`
 re-checks earlier approvals and withdraws any whose target moved.
 
@@ -254,7 +257,7 @@ To review again, comment `@<bot_username> review` as the first line. The
 author needs Developer access or above. The username comes from the lock,
 where `reviewd config resolve` put it; for a project access token it looks
 like `project_123_bot_4f2c...`, and `reviewd config check` shows it. Set
-`bot_username` to override it. GitLab runs line-leading `/` commands as
+`auth.bot_username` to override it. GitLab runs line-leading `/` commands as
 quick actions, so there is no slash form.
 
 The **Comments** trigger sends GitLab's *Note Hook*. Only comments on merge

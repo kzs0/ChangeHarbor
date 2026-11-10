@@ -49,7 +49,8 @@ version: 1
 repositories:
   app:
     url: https://gitlab.com/group/app
-    token_env: GITLAB_TOKEN
+    auth:
+      token_env: GITLAB_TOKEN
     mirror:
       path: /srv/mirrors/app.git
     policy: policies/app.json

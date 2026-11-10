@@ -17,7 +17,7 @@ Every write is off by default (`shadow`). Config examples on these pages are val
 - [Coming from CodeRabbit](https://kzs0.github.io/ChangeHarbor/guides/coming-from-coderabbit/): feature mapping, .coderabbit.yaml translation, what's missing
 - [GitHub](https://kzs0.github.io/ChangeHarbor/guides/github/): GitHub App or machine user, permissions, webhook events, branch protection
 - [GitLab](https://kzs0.github.io/ChangeHarbor/guides/gitlab/): project access token, trusted CI, merge request settings, webhooks
-- [Run the service](https://kzs0.github.io/ChangeHarbor/guides/service/): reviewd serve, events, review.auto, the review command, systemd
+- [Run the service](https://kzs0.github.io/ChangeHarbor/guides/service/): reviewd serve, events, triggers, the review command, systemd
 - [Run in a container](https://kzs0.github.io/ChangeHarbor/guides/container/): the published image with Docker Compose and Caddy
 - [Rollout checklist](https://kzs0.github.io/ChangeHarbor/guides/rollout/): shadow, then comments, inline comments and approvals
 

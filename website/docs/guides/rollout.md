@@ -44,8 +44,8 @@ reviewd explain --run RUN_ID --state STATE_DIR   # how the decision was reached
 - [ ] each *would withhold* reason makes sense (see
       [Troubleshooting](../operations/troubleshooting.md)).
 
-Changing anything under `review` (other than `review.auto`) makes earlier
-runs unpublishable, so review again after tuning.
+Changing anything under `review` makes earlier runs unpublishable, so
+review again after tuning. `triggers` can change freely.
 
 ## 2. Shadow, as a service
 

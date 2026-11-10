@@ -21,13 +21,13 @@ the forge's own protections allow it.
 | `reviews.path_filters` (`!pattern`) | `review.exclude` | Exclusions only; write the patterns without `!`. Excluded files still count toward risk-policy minimums. |
 | `tone_instructions`, review profile | `review.instructions` | Free text, added to every review prompt. |
 | `reviews.auto_review.enabled` | Webhook subscriptions | The service reviews every change it gets events for. |
-| `reviews.auto_review.drafts: false` | `review.auto.drafts: skip` (the default) | A skipped draft is reviewed when marked ready. |
-| `reviews.auto_review.ignore_title_keywords` | `review.auto.skip_title_keywords` | Case-insensitive substrings. |
-| `reviews.auto_review.labels: ["!label"]` | `review.auto.skip_labels` | Skip labels only; there's no "review only with this label". |
-| Skipping bot authors | `review.auto.ignore_authors` | `*` wildcards, e.g. `renovate*`. |
+| `reviews.auto_review.drafts: false` | `triggers.drafts: skip` (the default) | A skipped draft is reviewed when marked ready. |
+| `reviews.auto_review.ignore_title_keywords` | `triggers.skip_title_keywords` | Case-insensitive substrings. |
+| `reviews.auto_review.labels: ["!label"]` | `triggers.skip_labels` | Skip labels only; there's no "review only with this label". |
+| Skipping bot authors | `triggers.ignore_authors` | `*` wildcards, e.g. `renovate*`. |
 | `auto_review.base_branches` | `branch` | One target branch per repository, the default branch unless set. A repository can appear only once in the file. |
-| `@coderabbitai review` | `@<bot_username> review`, or `/changeharbor review` on GitHub | Must be the comment's first line, from someone with write access. Bypasses `review.auto` and always makes a fresh model request. |
-| `@coderabbitai full review`, `pause`, `resume`, `ignore`, `resolve` and other commands | Not supported | `review` is the only command. Use `review.auto.skip_labels` to pause a PR. |
+| `@coderabbitai review` | `@<bot_username> review`, or `/changeharbor review` on GitHub | Must be the comment's first line, from someone with write access. Bypasses `triggers` and always makes a fresh model request. |
+| `@coderabbitai full review`, `pause`, `resume`, `ignore`, `resolve` and other commands | Not supported | `review` is the only command. Use `triggers.skip_labels` to pause a PR. |
 | Chat (replying to the bot) | Not supported | Replies to ChangeHarbor's comments are ignored. |
 | Learnings and knowledge base | Not supported | Put durable guidance in `review.instructions` instead; it's reviewed like any other config change. |
 | `request_changes_workflow` | Revision-bound approvals | ChangeHarbor never requests changes. It approves the reviewed commit when the effective risk is at or below your threshold, checks passed, and nothing moved, and withdraws its approval when anything does. See [How it works](../getting-started/how-it-works.md). |
@@ -63,7 +63,9 @@ chat:
 
 The same intent in `changeharbor.yaml`. The parts with no equivalent
 (`profile`, `chat`) are dropped, and the parts CodeRabbit sets up for you
-(model, mirror, policy, webhook secret) are added:
+(model, mirror, policy, webhook secret) are added. Settings you would share
+across repositories, as in an organization-wide `.coderabbit.yaml`, go
+under `defaults`; each repository adds its own URL, mirror and policy:
 
 ```yaml
 # changeharbor.yaml
@@ -74,33 +76,35 @@ service:
   github_secret_env: GITHUB_WEBHOOK_SECRET
 models:
   default: models/review.json
+defaults:
+  auth:
+    github_app:
+      app_id: 123456
+      private_key_env: CHANGEHARBOR_APP_KEY
+  review:
+    instructions: Be brief. Prefer explicit error handling.
+    exclude: ["vendor/**", "**/*.pb.go", "go.sum"]
+  triggers:
+    drafts: skip
+    skip_title_keywords: ["WIP", "[skip review]"]
+    skip_labels: ["skip-review"]
+    ignore_authors: ["dependabot[bot]", "renovate[bot]"]
+  publish:
+    comments: post
+    inline_comments: post
+    approvals: shadow
 repositories:
   api:
     url: https://github.com/acme/api
-    github:
-      app:
-        app_id: 123456
-        private_key_env: CHANGEHARBOR_APP_KEY
     mirror:
       path: /srv/mirrors/api.git
     policy: policies/api.json
     review:
-      instructions: Be brief. Prefer explicit error handling.
       path_instructions:
         - paths: ["migrations/**"]
           instructions: Check that every migration can be rolled back.
         - paths: ["internal/auth/**"]
           instructions: Look for missing authorization checks.
-      exclude: ["vendor/**", "**/*.pb.go", "go.sum"]
-      auto:
-        drafts: skip
-        skip_title_keywords: ["WIP", "[skip review]"]
-        skip_labels: ["skip-review"]
-        ignore_authors: ["dependabot[bot]", "renovate[bot]"]
-    publish:
-      comments: post
-      inline_comments: post
-      approvals: shadow
 ```
 
 A few things behave differently from what you may expect:
@@ -111,7 +115,7 @@ A few things behave differently from what you may expect:
 - Every changed file must fit in one model request. If a pull request is too
   big, nothing is sent and the summary comment says so, unless you set
   `review.large_changes: partial`. See [Model providers](../configuration/providers.md#how-big-a-change-fits).
-- Changing anything under `review` except `review.auto` makes earlier
+- Changing anything under `review` makes earlier
   reviews unpublishable, so open PRs are reviewed afresh on their next push
   or command.
 - Approvals start in `shadow`. Leave them there until the

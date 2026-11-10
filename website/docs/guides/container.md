@@ -43,8 +43,8 @@ models:
 repositories:
   api:
     url: https://github.com/acme/api
-    github:
-      app:
+    auth:
+      github_app:
         app_id: 123456
         private_key_env: CHANGEHARBOR_APP_KEY
     mirror:
@@ -89,7 +89,8 @@ With a token instead of an App, pass the token variable the same way, for
 example `-e GITLAB_TOKEN`.
 
 Run `config resolve` again whenever you add a repository or change
-`url`, `token_env`, `bot_user_id`, `bot_username` or `github.app`.
+`url`, `auth.token_env`, `auth.bot_user_id`, `auth.bot_username` or
+`auth.github_app`.
 
 ## Start it
 

@@ -17,7 +17,8 @@ models:
 repositories:
   app:
     url: https://gitlab.com/group/app
-    token_env: GITLAB_TOKEN
+    auth:
+      token_env: GITLAB_TOKEN
     mirror:
       path: /srv/mirrors/app.git
     policy: policies/app.json
@@ -34,8 +35,8 @@ reviewd serve --config /etc/changeharbor/changeharbor.yaml
 
 | Event | Action |
 | --- | --- |
-| MR/PR opened, reopened, new commits, marked ready, or retargeted | Withdraw ChangeHarbor's approval of an older head, apply [`review.auto`](#automatic-reviews), then capture from the API, sync the mirror, review, and comment and approve per `publish`. |
-| `@<bot_username> review` comment (GitHub also `/changeharbor review`) | The same, but `review.auto` is bypassed. See [Ask for a review](#ask-for-a-review). |
+| MR/PR opened, reopened, new commits, marked ready, or retargeted | Withdraw ChangeHarbor's approval of an older head, apply [`triggers`](#automatic-reviews), then capture from the API, sync the mirror, review, and comment and approve per `publish`. |
+| `@<bot_username> review` comment (GitHub also `/changeharbor review`) | The same, but `triggers` are bypassed. See [Ask for a review](#ask-for-a-review). |
 | Push to the configured branch | Update the change journal, then withdraw approvals whose target moved. |
 
 In `shadow` the service reviews and saves the result but posts nothing, and
@@ -49,7 +50,7 @@ draft state, labels, authors and comment text always come from the API.
 
 ## Automatic reviews
 
-By default drafts are skipped. `review.auto` adds more rules:
+By default drafts are skipped. `triggers` adds more rules:
 
 ```yaml
 # changeharbor.yaml
@@ -57,16 +58,16 @@ version: 1
 repositories:
   app:
     url: https://gitlab.com/group/app
-    token_env: GITLAB_TOKEN
+    auth:
+      token_env: GITLAB_TOKEN
     mirror:
       path: /srv/mirrors/app.git
     policy: policies/app.json
-    review:
-      auto:
-        drafts: skip
-        ignore_authors: ["dependabot[bot]", "renovate*"]
-        skip_labels: ["skip-review"]
-        skip_title_keywords: ["[skip review]"]
+    triggers:
+      drafts: skip
+      ignore_authors: ["dependabot[bot]", "renovate*"]
+      skip_labels: ["skip-review"]
+      skip_title_keywords: ["[skip review]"]
 ```
 
 A skipped change gets no review, no comment and no approval; stale approvals
@@ -97,7 +98,7 @@ an earlier request whose outcome is unknown is never replayed by an event or
 by the service retrying a job, and a re-delivered command comment makes no
 second request. Each command is billed like any review.
 
-The bot's username comes from `bot_username` or the lock, where
+The bot's username comes from `auth.bot_username` or the lock, where
 `reviewd config resolve` records it (`<slug>[bot]` for a GitHub App). A
 trailing `[bot]` is optional when you type the command. Subscribe the
 webhook to comments: GitHub *Issue comments*, GitLab *Comments*.

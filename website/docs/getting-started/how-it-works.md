@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart LR
-    W[MR/PR event] --> T{review.auto}
+    W[MR/PR event] --> T{triggers}
     T -->|skipped| S[Log and record the skip]
     T -->|review| C[Capture MR/PR from the forge API]
     X[Review command or CLI] --> C
@@ -66,7 +66,7 @@ skipped by default, and you can skip bot authors, labels and title keywords.
 
 Anyone with write access can ask for a review by commenting
 `@<bot_username> review` (or `/changeharbor review` on GitHub). That skips
-`review.auto`, drafts included. `reviewd review --url` reviews a change by
+`triggers`, drafts included. `reviewd review --url` reviews a change by
 hand.
 
 ## Modes
