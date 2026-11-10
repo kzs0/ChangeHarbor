@@ -88,7 +88,11 @@ How a repository's own values merge with the inherited ones:
   repository can add its `installation_id` to the inherited App. Likewise
   `model` and `response` replace each other.
 - `gitlab` and `auth.token_scheme` apply only to GitLab repositories, and
-  `github` only to GitHub repositories.
+  `github` and `auth.github_app` only to GitHub repositories. So `defaults`
+  may set both `auth.token_env` and `auth.github_app`: GitHub repositories
+  use the App and GitLab repositories the token.
+- A repository can't remove an inherited text value or map entry (empty
+  values aren't allowed); set those per repository instead.
 - Relative paths resolve against this file's directory, as they do under a
   repository.
 

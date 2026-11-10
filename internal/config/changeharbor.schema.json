@@ -178,11 +178,11 @@
         "auth": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Credentials and bot identity. Set exactly one of auth.token_env and auth.github_app.",
+          "description": "Credentials and bot identity every repository inherits. auth.github_app applies only to GitHub repositories and auth.token_scheme only to GitLab ones, so defaults may set both auth.token_env and auth.github_app: GitHub repositories use the App, GitLab repositories the token.",
           "properties": {
             "token_env": {
               "type": "string",
-              "description": "Environment variable holding the forge token. Set exactly one of auth.token_env and auth.github_app."
+              "description": "Environment variable holding the forge token. A GitHub repository uses it only when no auth.github_app is set or inherited."
             },
             "token_scheme": {
               "type": "string",
@@ -195,7 +195,7 @@
             "github_app": {
               "type": "object",
               "additionalProperties": false,
-              "description": "Authenticate as a GitHub App. Set exactly one of auth.token_env and auth.github_app. GitHub repositories only.",
+              "description": "Authenticate GitHub repositories as a GitHub App; GitLab repositories don't inherit it. A repository that sets auth.token_env drops it.",
               "properties": {
                 "app_id": {
                   "type": "string",
@@ -549,10 +549,6 @@
         "summary": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "model",
-            "limits"
-          ],
           "description": "Background summary generation.",
           "properties": {
             "model": {
@@ -665,8 +661,7 @@
         "additionalProperties": false,
         "required": [
           "url",
-          "mirror",
-          "policy"
+          "mirror"
         ],
         "description": "A repository reviewd serves, keyed by a short lowercase name.",
         "properties": {
@@ -706,11 +701,7 @@
               "github_app": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": [
-                  "app_id",
-                  "private_key_env"
-                ],
-                "description": "Authenticate as a GitHub App. Set exactly one of auth.token_env and auth.github_app. GitHub repositories only.",
+                "description": "Authenticate as a GitHub App. Set exactly one of auth.token_env and auth.github_app. GitHub repositories only. app_id and private_key_env are required, here or inherited from defaults.",
                 "properties": {
                   "app_id": {
                     "type": "string",
@@ -803,7 +794,7 @@
             "description": "Target branch. Default: the repository's default branch, pinned in the lock."
           },
           "policy": {
-            "description": "Merge risk policy: a file path (JSON, or YAML when it ends in .yaml or .yml) or an inline mapping.",
+            "description": "Merge risk policy: a file path (JSON, or YAML when it ends in .yaml or .yml) or an inline mapping. Required, here or in defaults.",
             "oneOf": [
               {
                 "type": "string",
@@ -1121,10 +1112,6 @@
               "app": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": [
-                  "app_id",
-                  "private_key_env"
-                ],
                 "description": "Deprecated: use auth.github_app. Authenticate as a GitHub App instead of token_env.",
                 "properties": {
                   "app_id": {
@@ -1147,11 +1134,7 @@
           "summary": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "model",
-              "limits"
-            ],
-            "description": "Background summary generation.",
+            "description": "Background summary generation. model and limits are required, here or inherited from defaults.",
             "properties": {
               "model": {
                 "type": "string",

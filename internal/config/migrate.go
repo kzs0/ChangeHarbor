@@ -149,8 +149,28 @@ func migrateRepository(p string, repo *yaml.Node) []string {
 	return changes
 }
 
-// blockStyle turns flow mappings and sequences into block style.
+// blockStyle turns flow mappings and sequences into block style. A line
+// comment on a flow value moves to its key (or, for a list item, to the
+// item's first key), where block style prints it; left on the value it
+// would follow the next key or item.
 func blockStyle(n *yaml.Node) {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k, v := n.Content[i], n.Content[i+1]
+			if v.Style&yaml.FlowStyle != 0 && v.LineComment != "" {
+				k.LineComment = joinComments(k.LineComment, v.LineComment)
+				v.LineComment = ""
+			}
+		}
+	}
+	if n.Kind == yaml.SequenceNode {
+		for _, v := range n.Content {
+			if v.Kind == yaml.MappingNode && v.Style&yaml.FlowStyle != 0 && v.LineComment != "" && len(v.Content) > 0 {
+				v.Content[0].LineComment = joinComments(v.Content[0].LineComment, v.LineComment)
+				v.LineComment = ""
+			}
+		}
+	}
 	if n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode {
 		n.Style &^= yaml.FlowStyle
 	}

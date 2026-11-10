@@ -190,8 +190,9 @@ func copyMap(m map[string]any) map[string]any {
 }
 
 // defaultsFor is the part of defaults a repository inherits: provider-
-// specific keys only for that provider, and a repository credential or
-// model drops the inherited alternative.
+// specific keys only for that provider (gitlab and auth.token_scheme for
+// GitLab, github and auth.github_app for GitHub), and a repository
+// credential or model drops the inherited alternative.
 func defaultsFor(def, repo map[string]any, provider string) map[string]any {
 	d := copyMap(def)
 	auth, _ := d["auth"].(map[string]any)
@@ -205,6 +206,7 @@ func defaultsFor(def, repo map[string]any, provider string) map[string]any {
 	}
 	if provider != "github" {
 		delete(d, "github")
+		delete(auth, "github_app")
 	}
 	if ra, ok := repo["auth"].(map[string]any); ok {
 		if _, ok := ra["token_env"]; ok {
@@ -213,6 +215,11 @@ func defaultsFor(def, repo map[string]any, provider string) map[string]any {
 		if _, ok := ra["github_app"]; ok {
 			delete(auth, "token_env")
 		}
+	}
+	// Defaults may hold an App for GitHub repositories and a token for
+	// GitLab ones; a GitHub repository that sets neither uses the App.
+	if _, app := auth["github_app"]; app {
+		delete(auth, "token_env")
 	}
 	if _, ok := repo["model"]; ok {
 		delete(d, "response")
@@ -337,6 +344,9 @@ func resolveLayout(root map[string]any) (layout, error) {
 			flat[name] = models[name]
 			if m, ok := models[name].(map[string]any); ok {
 				c, e := decodeInline("models."+name, m, model.DecodeHTTPConfig)
+				if e == nil {
+					e = checkModelKey("models."+name+".", c)
+				}
 				if e != nil {
 					return l, e
 				}
@@ -428,9 +438,6 @@ func validateDefaults(d RepositorySettings, models map[string]bool) error {
 				return e
 			}
 		}
-		if a.TokenEnv != "" && a.GitHubApp != nil {
-			return fmt.Errorf("%s.auth: set exactly one of auth.token_env and auth.github_app", at)
-		}
 		if a.GitHubApp != nil {
 			if e := checkApp(at+".auth.github_app", a.GitHubApp); e != nil {
 				return e
@@ -460,7 +467,7 @@ func validateDefaults(d RepositorySettings, models map[string]bool) error {
 			return e
 		}
 	}
-	if d.Summary != nil && !models[d.Summary.Model] {
+	if d.Summary != nil && d.Summary.Model != "" && !models[d.Summary.Model] {
 		return fmt.Errorf("%s.summary.model: %q is not defined in models", at, d.Summary.Model)
 	}
 	return nil
@@ -565,8 +572,21 @@ func LoadModelConfig(path string) (model.HTTPConfig, error) {
 		}
 	}
 	c, e := model.DecodeHTTPConfig(bytes.NewReader(b))
+	if e == nil && isYAML(path) {
+		e = checkModelKey("", c)
+	}
 	if e != nil {
 		return c, fmt.Errorf("%s: %w", path, e)
 	}
 	return c, nil
+}
+
+// checkModelKey rejects an api_key_env that is not an environment variable
+// name, such as a key pasted in its place; the error never repeats the
+// value. JSON model files are read as before.
+func checkModelKey(at string, c model.HTTPConfig) error {
+	if c.APIKeyEnv != "" && !envName.MatchString(c.APIKeyEnv) {
+		return fmt.Errorf("%sapi_key_env: invalid environment variable name", at)
+	}
+	return nil
 }

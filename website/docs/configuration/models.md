@@ -59,7 +59,7 @@ It makes one request per review, with no tools.
 | `api` | `openai_chat` (default) or `anthropic_messages`. |
 | `endpoint` | Full HTTPS URL. Required for `openai_chat`; `anthropic_messages` defaults to `https://api.anthropic.com/v1/messages`. |
 | `model` | Model name sent with each request. |
-| `api_key_env` | Environment variable holding the API key. |
+| `api_key_env` | Environment variable holding the API key. The key itself never goes in a model config: inline and YAML configs reject anything that isn't a variable name. |
 | `api_key_header` | Header that carries the key, e.g. `api-key` for Azure OpenAI. Default `Authorization` (`openai_chat`) or `x-api-key` (`anthropic_messages`). |
 | `api_key_prefix` | Word sent before the key. Default `Bearer` when the header is `Authorization`, none otherwise. `""` sends the bare key. |
 | `capabilities` | What the model supports: `context_tokens`, `max_output_tokens`, `structured_output`, and `input_tokens_per_byte`, a whole-number upper bound (1 to 16) on tokens per prompt byte used for budgeting. Optional `pricing_known` with `input_price_micros_per_million` and `output_price_micros_per_million` enables cost tracking. |

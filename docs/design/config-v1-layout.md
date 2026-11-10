@@ -94,8 +94,14 @@ Per repository, after the repository's own aliases are resolved (section 2):
   repository can add its `installation_id` to an inherited App.
 - **Provider-specific keys** in `defaults` apply only to matching
   repositories: `gitlab.*` and `auth.token_scheme` only to GitLab
-  repositories, `github.*` only to GitHub repositories. They never cause the
-  "only valid for GitLab/GitHub repositories" error on the other provider.
+  repositories, `github.*` and `auth.github_app` only to GitHub
+  repositories. They never cause the "only valid for GitLab/GitHub
+  repositories" error on the other provider. `defaults.auth` may therefore
+  set both `token_env` and `github_app` (the one place both are allowed): a
+  GitHub repository that sets neither uses the App, a GitLab repository
+  the token.
+- A repository can't clear an inherited scalar or map entry (empty values
+  and nulls are rejected); only lists can be cleared, with `[]`.
 - Relative paths in `defaults` (`policy`, `response`) resolve against the
   config file's directory, exactly like repository paths.
 - `Settings.Defaults` (`json.RawMessage`, `json:"defaults,omitempty"`) keeps
@@ -267,7 +273,9 @@ fields. Inline mappings and `.yaml`/`.yml` files use the strict YAML rules
 and the settings key checks (`models.default.limits.timout: unknown key; did
 you mean "timeout"?`), then `model.DecodeHTTPConfig`. `limits.timeout`
 accepts a duration string (`3m`, `90s`) or integer nanoseconds.
-`api_key_prefix: ""` is allowed (it means no prefix). JSON model files are
+`api_key_prefix: ""` is allowed (it means no prefix). `api_key_env` must be an
+environment variable name (`models.default.api_key_env: invalid environment
+variable name`, never echoing the value), so a pasted key is refused. JSON model files are
 read exactly as today.
 
 Go: `Settings.Models[name]` stays the absolute path ("" for an inline
@@ -284,7 +292,11 @@ excluded keys, deprecated keys omitted), `auth` (with `github_app`),
 `triggers`; `policy` and `models.*` become `oneOf` string / object (the
 object listing the policy or model fields). The deprecated keys stay, with
 `"deprecated": true` and a description naming the new key. Every key keeps
-a description (`TestSchemaCoversEverySettingsKey`).
+a description (`TestSchemaCoversEverySettingsKey`). The schema sees one
+repository entry at a time, so it requires only `url` and `mirror` (with
+`mirror.path`); `policy`, `auth.github_app.app_id`/`private_key_env` and
+`summary.model`/`limits` may come from `defaults`, and the decoder requires
+them on the merged result.
 
 ## Commands
 
