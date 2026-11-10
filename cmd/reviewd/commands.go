@@ -23,6 +23,7 @@ import (
 	"github.com/kzs0/reviewd/internal/contextbuild"
 	"github.com/kzs0/reviewd/internal/contextpack"
 	"github.com/kzs0/reviewd/internal/evaluate"
+	gh "github.com/kzs0/reviewd/internal/forge/github"
 	gitreader "github.com/kzs0/reviewd/internal/git"
 	"github.com/kzs0/reviewd/internal/jobs"
 	"github.com/kzs0/reviewd/internal/journal"
@@ -787,7 +788,7 @@ func reviewCommandEvent(ctx context.Context, c serverConfig, o repositoryConfig,
 
 // commandRejection returns why a review command is ignored, or "".
 func commandRejection(ctx context.Context, fc forgeConfig, event worker.Event) (string, error) {
-	var body, authorID, association string
+	var body, authorID, login string
 	level := 0
 	if fc.Provider == "github" {
 		x, e := githubClient(fc).IssueComment(ctx, fc.Owner, fc.Repository, event.CommentID)
@@ -797,7 +798,7 @@ func commandRejection(ctx context.Context, fc forgeConfig, event worker.Event) (
 		if x.IssueNumber != event.ChangeNumber {
 			return "comment_mismatch", nil
 		}
-		body, authorID, association = x.Body, x.AuthorID, x.AuthorAssociation
+		body, authorID, login = x.Body, x.AuthorID, x.AuthorLogin
 		if fc.BotUsername != "" && strings.EqualFold(strings.TrimSuffix(strings.ToLower(x.AuthorLogin), "[bot]"), strings.TrimSuffix(strings.ToLower(fc.BotUsername), "[bot]")) {
 			return "bot_author", nil
 		}
@@ -825,9 +826,22 @@ func commandRejection(ctx context.Context, fc forgeConfig, event worker.Event) (
 		if level, e = gitlabClient(fc).AccessLevel(ctx, fc.ProjectID, authorID); e != nil {
 			return "", e
 		}
-	}
-	if !commandAuthorized(fc.Provider, association, level) {
-		return "unauthorized", nil
+		if !commandAuthorized(fc.Provider, "", level) {
+			return "unauthorized", nil
+		}
+	} else {
+		// author_association is not reliable for private organisation
+		// members; the author's repository permission decides.
+		if !gh.ValidLogin(login) {
+			return "unauthorized", nil
+		}
+		p, e := githubClient(fc).CollaboratorPermission(ctx, fc.Owner, fc.Repository, login)
+		if e != nil {
+			return "", e
+		}
+		if !githubPermissionAuthorized(p.Permission, p.RoleName) {
+			return "unauthorized", nil
+		}
 	}
 	branch := ""
 	if fc.Provider == "gitlab" {

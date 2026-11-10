@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -490,4 +491,49 @@ func (c *Client) Me(ctx context.Context) (User, error) {
 		return User{}, errors.New("missing GitHub user identity")
 	}
 	return User{ID: fmt.Sprint(x.ID), Username: x.Login}, nil
+}
+
+// validLoginPattern is the form of a GitHub user or App bot login.
+var validLoginPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$`)
+
+// ValidLogin reports whether login has the form of a GitHub login.
+func ValidLogin(login string) bool { return validLoginPattern.MatchString(login) }
+
+// Permission is a user's permission on a repository. Permission is
+// GitHub's base level (admin, write, read or none); RoleName is the role
+// (admin, maintain, write, triage, read or a custom role name), "" when the
+// API omits it.
+type Permission struct{ Permission, RoleName, Login string }
+
+// CollaboratorPermission reads login's permission on owner/repo. A user who
+// is not a collaborator (404) has Permission{} and no error.
+func (c *Client) CollaboratorPermission(ctx context.Context, owner, repo, login string) (Permission, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return Permission{}, e
+	}
+	if !ValidLogin(login) {
+		return Permission{}, errors.New("invalid GitHub login")
+	}
+	var x struct {
+		Permission string `json:"permission"`
+		RoleName   string `json:"role_name"`
+		User       struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if e = c.request(ctx, "GET", p+"/collaborators/"+url.PathEscape(login)+"/permission", nil, &x); e != nil {
+		var se *StatusError
+		if errors.As(e, &se) && se.Code == http.StatusNotFound {
+			return Permission{}, nil
+		}
+		return Permission{}, e
+	}
+	if !strings.EqualFold(x.User.Login, login) {
+		return Permission{}, errors.New("GitHub permission identity mismatch")
+	}
+	if x.Permission == "" {
+		return Permission{}, errors.New("missing GitHub permission")
+	}
+	return Permission{Permission: x.Permission, RoleName: x.RoleName, Login: x.User.Login}, nil
 }

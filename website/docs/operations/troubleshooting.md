@@ -68,7 +68,7 @@ setting, or opt out with `publish.protections: advisory`.
 | partial review: some files were not reviewed; approval requires a complete review | `review.large_changes: partial` left files out. | Expected: partial reviews are never approved. Split the change or use a larger model. |
 | review did not complete (…) | The run is `input_incomplete` or `invalid_output`. | See the status comment's reason above. |
 | `skipped automatic review of …: draft` (or `ignored_author`, `skip_label`, `skip_title_keyword`) in the service log | `review.auto` skipped the change. | Mark it ready, remove the label or keyword and push, or comment `@<bot_username> review`. |
-| A review command does nothing | It was ignored; the reason is in state under `review_command` (`unauthorized`, `not_a_command`, `bot_author`, `bot_username_unknown`, `branch_mismatch`, …). | The command must be the comment's first line, from someone with write access (GitHub owner/member/collaborator, GitLab Developer+). Set `bot_username` or rerun `reviewd config resolve` for the `@` form, and subscribe the webhook to comments. |
+| A review command does nothing | It was ignored; the reason is in state under `review_command` (`unauthorized`, `not_a_command`, `bot_author`, `bot_username_unknown`, `branch_mismatch`, …). | The command must be the comment's first line, from someone with write access (GitHub Write, Maintain or Admin role; GitLab Developer+). Set `bot_username` or rerun `reviewd config resolve` for the `@` form, and subscribe the webhook to comments. |
 | A GitLab MR edit doesn't start a review | Only new commits, marking ready and retargeting do. | Push, or comment `@<bot_username> review`. |
 
 ## Webhooks

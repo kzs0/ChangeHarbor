@@ -95,6 +95,22 @@ func parseReviewCommand(provider, body, botUsername string) bool {
 	return false
 }
 
+// githubPermissionAuthorized reports whether a GitHub user with this
+// repository permission may request a review: the base permission must be
+// exactly admin or write, and the role name (which can only veto) must not
+// be read, triage or none. A custom role reports its base permission; an
+// absent role name ("") does not veto.
+func githubPermissionAuthorized(permission, roleName string) bool {
+	if permission != "admin" && permission != "write" {
+		return false
+	}
+	switch roleName {
+	case "read", "triage", "none":
+		return false
+	}
+	return true
+}
+
 // commandAuthorized reports whether a comment author may request a review:
 // on GitHub an OWNER, MEMBER or COLLABORATOR association; on GitLab at least
 // Developer access (30).

@@ -40,7 +40,7 @@ your organization's settings for an org-owned App):
     | Checks | Read | Reading check runs on the reviewed commit |
     | Issues | Read | Receiving *Issue comment* events and reading the review command |
     | Administration | Read | Reading branch protection; not needed with `publish.protections: advisory` |
-    | Metadata | Read | Required by GitHub |
+    | Metadata | Read | Required by GitHub; also reading a commenter's repository permission for the review command |
 
 4. **Subscribe to events**: **Pull request**, **Push** and **Issue comment**.
 5. Create it, note the **App ID**, and generate a private key.
@@ -61,7 +61,8 @@ five minutes before it expires. Tokens, JWTs and the key stay in memory.
     Create a GitHub user for the bot, add it to the repository as a
     collaborator with **Write** access, and create a fine-grained token for
     it, scoped to the repository, with the permissions in the table above
-    (Issues isn't needed). Then:
+    (Issues isn't needed; Metadata covers reading a commenter's permission).
+    Then:
 
     ```sh
     export GITHUB_TOKEN=github_pat_...
@@ -177,8 +178,14 @@ Each push to `main` re-checks earlier approvals and dismisses any whose
 target moved.
 
 To review again, comment `@<slug> review` (or `@<slug>[bot] review`) or
-`/changeharbor review`, on the first line. The comment's author must be the
-repository's owner, a member of the organization, or a collaborator.
+`/changeharbor review`, on the first line. The comment's author needs the
+**Write**, **Maintain** or **Admin** role on the repository (or a custom role
+based on Write); **Triage** and **Read** aren't enough. ChangeHarbor reads it
+with `GET /repos/{owner}/{repo}/collaborators/{login}/permission`, which needs
+only the Metadata permission, and doesn't trust the comment's
+`author_association`, which can show a private organization member as a
+contributor. A command always makes a fresh model request for the current
+head, even if the last review of that commit failed or was rejected.
 
 With a machine user, the `@` form uses the user's login, which
 `config resolve` records. If you set `bot_user_id` yourself, set
