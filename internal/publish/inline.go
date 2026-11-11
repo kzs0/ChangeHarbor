@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/kzs0/reviewd/internal/model"
 )
@@ -46,9 +47,52 @@ func InlineMarker(changeKey, fingerprint string) string {
 }
 
 // InlineContent is one anchored finding to render as an inline comment.
+// Provider selects the suggestion syntax ("gitlab", otherwise GitHub);
+// Suggestions includes the finding's committable suggestion, if any.
 type InlineContent struct {
 	ChangeKey, RunID string
 	Finding          model.Finding
+	Provider         string
+	Suggestions      bool
+}
+
+var gitlabQuickAction = regexp.MustCompile(`(?m)^/[A-Za-z]`)
+
+// cleanSuggestion strips control (except tab and newline), bidi and CR
+// characters from a replacement and drops its final newline.
+func cleanSuggestion(s string) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case unicode.IsControl(r), unicode.Is(unicode.Bidi_Control, r), r == '\u200b', r == '\u2028', r == '\u2029':
+			return -1
+		}
+		return r
+	}, s)
+	return strings.TrimSuffix(s, "\n")
+}
+
+// suggestionBlock renders a finding's committable suggestion for the
+// provider. The fence is longer than any backtick run in the replacement. On
+// GitLab a replacement line starting with "/" followed by a letter could be
+// read as a quick action, so the block is dropped with a host-written note.
+func suggestionBlock(c InlineContent) (block string, ok bool) {
+	f := c.Finding
+	if !c.Suggestions || f.Suggestion == "" || (f.Side != "" && f.Side != "new") {
+		return "", false
+	}
+	repl := cleanSuggestion(f.Suggestion)
+	info := "suggestion"
+	if c.Provider == "gitlab" {
+		if gitlabQuickAction.MatchString(repl) {
+			return "\n_A proposed replacement was left out: a line starting with `/` could run a GitLab quick action._\n", true
+		}
+		info = fmt.Sprintf("suggestion:-0+%d", max(f.SuggestionEndLine, f.Line)-f.Line)
+	}
+	fence := strings.Repeat("`", max(3, longestRun(repl, '`')+1))
+	return "\n" + fence + info + "\n" + repl + "\n" + fence + "\n", true
 }
 
 // RenderInline renders a finding's inline comment. Host-validated facts
@@ -69,9 +113,10 @@ func RenderInline(c InlineContent) (string, error) {
 	}
 	h.WriteString("\n\n")
 	report := clean(fmt.Sprintf("%s\nTrigger: %s\nConsequence: %s", f.Title, f.Trigger, f.Consequence))
+	suggestion, _ := suggestionBlock(c)
 	for truncated := false; ; truncated = true {
 		fence := strings.Repeat("`", max(3, longestRun(report, '`')+1))
-		body := h.String() + fence + "text\n" + report + "\n" + fence + "\n"
+		body := h.String() + fence + "text\n" + report + "\n" + fence + "\n" + suggestion
 		if truncated {
 			body += "\n_Truncated to fit the comment limit._\n"
 		}
@@ -118,45 +163,81 @@ func UnmarkOutdated(body string) string {
 func isOutdated(body string) bool { return strings.HasPrefix(body, OutdatedMarker) }
 
 // InlineTarget is one inline comment to create, anchored to a changed line.
-// Side is "new" or "old".
+// Side is "new" or "old". EndLine > Line spans a multi-line suggestion
+// (GitHub posts it from Line to EndLine).
 type InlineTarget struct {
 	Fingerprint, Path, Side string
 	Line                    int
+	EndLine                 int `json:",omitempty"`
 	Body                    string
 	// OldPath and NewPath are the file's paths on each side of the forge's
 	// diff, when the forge needs both (GitLab positions).
 	OldPath, NewPath string `json:",omitempty"`
 }
 
-// InlineTargets turns anchored findings into inline comments. Findings
-// without an anchor stay in the summary only; findings sharing a
-// fingerprint collapse to the first.
+// InlineOptions controls which findings are posted inline and how.
+// MinSeverity defaults to "low".
+type InlineOptions struct {
+	Provider    string
+	Suggestions bool
+	MinSeverity string
+}
+
+var severityRank = map[string]int{"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+// InlineTargets turns every anchored finding into an inline comment, without
+// suggestions or a severity threshold.
 func InlineTargets(changeKey, runID string, findings []model.Finding) ([]InlineTarget, error) {
+	t, _, e := BuildInlineTargets(changeKey, runID, findings, InlineOptions{MinSeverity: "info"})
+	return t, e
+}
+
+// BuildInlineTargets turns anchored findings at or above the severity
+// threshold into inline comments. It also returns the fingerprints of
+// findings the review reports but that aren't posted inline (unanchored or
+// below the threshold): their existing comments must not be marked outdated.
+// Findings sharing a fingerprint collapse to the first.
+func BuildInlineTargets(changeKey, runID string, findings []model.Finding, o InlineOptions) ([]InlineTarget, []string, error) {
+	min := o.MinSeverity
+	if min == "" {
+		min = "low"
+	}
+	threshold, ok := severityRank[min]
+	if !ok {
+		return nil, nil, fmt.Errorf("unknown inline severity threshold %q", min)
+	}
 	var out []InlineTarget
+	var present []string
 	seen := map[string]bool{}
 	for _, f := range findings {
-		if f.Path == "" || f.Line <= 0 {
-			continue
-		}
 		fp := FindingFingerprint(f)
 		if seen[fp] {
 			continue
 		}
 		seen[fp] = true
+		if f.Path == "" || f.Line <= 0 || severityRank[f.Severity] < threshold {
+			present = append(present, fp)
+			continue
+		}
 		side := f.Side
 		if side == "" {
 			side = "new"
 		}
 		if side != "new" && side != "old" {
-			return nil, errors.New("invalid finding side")
+			return nil, nil, errors.New("invalid finding side")
 		}
-		body, e := RenderInline(InlineContent{ChangeKey: changeKey, RunID: runID, Finding: f})
+		c := InlineContent{ChangeKey: changeKey, RunID: runID, Finding: f, Provider: o.Provider, Suggestions: o.Suggestions}
+		body, e := RenderInline(c)
 		if e != nil {
-			return nil, e
+			return nil, nil, e
 		}
-		out = append(out, InlineTarget{Fingerprint: fp, Path: f.Path, Side: side, Line: f.Line, Body: body})
+		t := InlineTarget{Fingerprint: fp, Path: f.Path, Side: side, Line: f.Line, Body: body}
+		if o.Suggestions && f.Suggestion != "" && side == "new" && f.SuggestionEndLine > f.Line {
+			t.EndLine = f.SuggestionEndLine
+		}
+		out = append(out, t)
 	}
-	return out, nil
+	return out, present, nil
 }
 
 // InlineComment is an existing inline comment on the change.

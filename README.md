@@ -148,6 +148,14 @@ longer reports has its comment marked "possibly outdated" (never deleted or
 resolved) and unmarked if it returns. The summary includes a per-file
 walkthrough when the model provides one.
 
+`review.instructions` and `review.path_instructions` add trusted review
+guidance to the prompt, and `review.exclude` leaves generated or vendored files
+out of the model's input (risk-policy minimums still count them).
+`publish.suggestions` (default `include`) adds one-click suggestion blocks to
+inline comments, and `publish.inline_min_severity` (default `low`) keeps
+lower findings in the summary only. Design:
+[docs/design/review-guidance-and-suggestions.md](docs/design/review-guidance-and-suggestions.md).
+
 ### GitLab submission
 
 GitLab repositories may set `token_scheme` (`private-token` default, or

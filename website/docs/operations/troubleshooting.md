@@ -70,6 +70,8 @@ setting, or opt out with `publish.protections: advisory`.
 | --- | --- |
 | lock is stale (… changed); run reviewd config resolve | You changed a setting the lock depends on. Run `reviewd config resolve`. |
 | no configured repository matches URL | Add the repository to `changeharbor.yaml`, or check the URL. |
+| review status `input_incomplete`: all_changes_excluded_by_trusted_policy | Every changed file matches `review.exclude`, so there was nothing to review. ChangeHarbor won't approve unreviewed changes; narrow the exclusions or review by hand. |
+| review status `invalid_output`: finding outside canonical changed lines / suggestion outside new-side changed lines | The model pointed a finding or suggestion at a line that isn't a changed line of the reviewed diff, or at a file excluded by `review.exclude`. The run publishes nothing; review again. |
 | another reviewd instance holds the state lock | The service is running against this state directory. |
 | prior write requires reconciliation | A previous approval attempt for this run had an unknown outcome (for example a timeout), so ChangeHarbor won't retry it blindly. Check the MR: if the approval is there, nothing else is needed. Otherwise review again; the new run publishes independently. |
 | ambiguous owned summary comments; reconcile manually | Two comments from the bot carry the summary marker. Delete one. |

@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/kzs0/reviewd/internal/policy"
 )
 
 // Settings is changeharbor.yaml. Policies and model configs remain
@@ -53,6 +55,7 @@ type RepositorySettings struct {
 	GitLab      *GitLabSettings  `json:"gitlab,omitempty"`
 	GitHub      *GitHubSettings  `json:"github,omitempty"`
 	Summary     *SummarySettings `json:"summary,omitempty"`
+	Review      *ReviewSettings  `json:"review,omitempty"`
 }
 
 type MirrorSettings struct {
@@ -66,6 +69,65 @@ type PublishSettings struct {
 	Protections string `json:"protections,omitempty"`
 	// InlineComments posts one comment per anchored finding on its line.
 	InlineComments string `json:"inline_comments,omitempty"`
+	// Suggestions includes committable suggestion blocks in inline comments.
+	Suggestions string `json:"suggestions,omitempty"`
+	// InlineMinSeverity is the lowest severity posted inline; lower
+	// findings stay in the summary comment.
+	InlineMinSeverity string `json:"inline_min_severity,omitempty"`
+}
+
+// ReviewSettings is trusted review guidance: it comes only from the reviewed
+// config, never from the repository under review.
+type ReviewSettings struct {
+	Instructions     string            `json:"instructions,omitempty"`
+	PathInstructions []PathInstruction `json:"path_instructions,omitempty"`
+	Exclude          []string          `json:"exclude,omitempty"`
+}
+
+// PathInstruction applies Instructions when a changed file matches Paths.
+type PathInstruction struct {
+	Paths        []string `json:"paths"`
+	Instructions string   `json:"instructions"`
+}
+
+// MaxGuidanceBytes caps all review instructions of one repository.
+const MaxGuidanceBytes = 16 * 1024
+
+func validGlob(pattern string) bool {
+	_, e := policy.Match(pattern, "x")
+	return pattern != "" && e == nil
+}
+
+// Validate checks trusted review guidance; at prefixes error paths.
+func (r *ReviewSettings) Validate(at string) error {
+	if r == nil {
+		return nil
+	}
+	size := len(r.Instructions)
+	for i, g := range r.Exclude {
+		if !validGlob(g) {
+			return fmt.Errorf("%s.exclude[%d]: invalid glob %q", at, i, g)
+		}
+	}
+	for i, pi := range r.PathInstructions {
+		pp := fmt.Sprintf("%s.path_instructions[%d]", at, i)
+		if len(pi.Paths) == 0 {
+			return fmt.Errorf("%s.paths: required", pp)
+		}
+		for j, g := range pi.Paths {
+			if !validGlob(g) {
+				return fmt.Errorf("%s.paths[%d]: invalid glob %q", pp, j, g)
+			}
+		}
+		if pi.Instructions == "" {
+			return fmt.Errorf("%s.instructions: required", pp)
+		}
+		size += len(pi.Instructions)
+	}
+	if size > MaxGuidanceBytes {
+		return fmt.Errorf("%s: guidance exceeds 16 KiB", at)
+	}
+	return nil
 }
 
 type GitLabSettings struct {
@@ -290,6 +352,17 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 		}
 		set("publish.inline_comments", "shadow", &r.Publish.InlineComments)
 		if e := enum(p+".publish.inline_comments", r.Publish.InlineComments, "off", "shadow", "post"); e != nil {
+			return e
+		}
+		set("publish.suggestions", "include", &r.Publish.Suggestions)
+		if e := enum(p+".publish.suggestions", r.Publish.Suggestions, "off", "include"); e != nil {
+			return e
+		}
+		set("publish.inline_min_severity", "low", &r.Publish.InlineMinSeverity)
+		if e := enum(p+".publish.inline_min_severity", r.Publish.InlineMinSeverity, "info", "low", "medium", "high", "critical"); e != nil {
+			return e
+		}
+		if e := r.Review.Validate(p + ".review"); e != nil {
 			return e
 		}
 		set("publish.protections", "required", &r.Publish.Protections)

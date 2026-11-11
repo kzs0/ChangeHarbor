@@ -366,12 +366,14 @@ func (c *Client) ReviewComments(ctx context.Context, owner, repo string, number,
 }
 
 // NewReviewComment is one inline comment of a new review. Side is RIGHT
-// (added or context line) or LEFT (removed line).
+// (added or context line) or LEFT (removed line). StartLine > 0 makes it a
+// multi-line comment from StartLine to Line on the same side.
 type NewReviewComment struct {
-	Path string
-	Line int
-	Side string
-	Body string
+	Path      string
+	StartLine int
+	Line      int
+	Side      string
+	Body      string
 }
 
 // CreateReviewComments posts all comments as one COMMENT review bound to the
@@ -386,10 +388,14 @@ func (c *Client) CreateReviewComments(ctx context.Context, owner, repo string, n
 	}
 	comments := make([]map[string]any, 0, len(cs))
 	for _, x := range cs {
-		if x.Path == "" || x.Line <= 0 || (x.Side != "RIGHT" && x.Side != "LEFT") || x.Body == "" {
+		if x.Path == "" || x.Line <= 0 || (x.Side != "RIGHT" && x.Side != "LEFT") || x.Body == "" || x.StartLine < 0 || x.StartLine > 0 && x.StartLine >= x.Line {
 			return Comment{}, errors.New("invalid review comment")
 		}
-		comments = append(comments, map[string]any{"path": x.Path, "line": x.Line, "side": x.Side, "body": x.Body})
+		comment := map[string]any{"path": x.Path, "line": x.Line, "side": x.Side, "body": x.Body}
+		if x.StartLine > 0 {
+			comment["start_line"], comment["start_side"] = x.StartLine, x.Side
+		}
+		comments = append(comments, comment)
 	}
 	var w writtenComment
 	if e = c.request(ctx, "POST", fmt.Sprintf("%s/pulls/%d/reviews", p, number), map[string]any{"commit_id": commitID, "event": "COMMENT", "comments": comments}, &w); e != nil {

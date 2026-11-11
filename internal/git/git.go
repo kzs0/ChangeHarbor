@@ -165,7 +165,7 @@ func (r Reader) Diff(ctx context.Context, base, head string) (Diff, error) {
 		if err != nil {
 			return d, err
 		}
-		f.Patch = string(patch)
+		f.Patch = ownSection(string(patch), f)
 		na := append(append([]string{}, args...), "--numstat", "--")
 		nums, err := r.run(ctx, append(na, paths...)...)
 		if err != nil {
@@ -239,4 +239,51 @@ func (r Reader) HasRemote(ctx context.Context, name string) bool {
 	}
 	_, e := r.run(ctx, "config", "--local", "--get", "remote."+name+".url")
 	return e == nil
+}
+
+// ownSection trims a per-file patch to the section for this file. git's patch
+// for a copy's pathspec {source, dest} also contains the source's own
+// modification; without trimming, that section would be attributed to the
+// copy (wrong anchors) and would reach the model with the copy even when the
+// source is excluded. If no section header matches exactly (for example a
+// path git quotes), the patch is returned unchanged.
+func ownSection(patch string, f File) string {
+	if strings.Count(patch, "diff --git ") <= 1 {
+		return patch
+	}
+	old, new := f.OldPath, f.NewPath
+	if old == "" {
+		old = new
+	}
+	if new == "" {
+		new = old
+	}
+	header := "diff --git a/" + old + " b/" + new
+	var sections []string
+	start := -1
+	for i := 0; i < len(patch); {
+		end := strings.IndexByte(patch[i:], '\n')
+		if end < 0 {
+			end = len(patch)
+		} else {
+			end += i + 1
+		}
+		if strings.HasPrefix(patch[i:], "diff --git ") {
+			if start >= 0 {
+				sections = append(sections, patch[start:i])
+			}
+			start = i
+		}
+		i = end
+	}
+	if start >= 0 {
+		sections = append(sections, patch[start:])
+	}
+	for _, sec := range sections {
+		first, _, _ := strings.Cut(sec, "\n")
+		if first == header {
+			return sec
+		}
+	}
+	return patch
 }

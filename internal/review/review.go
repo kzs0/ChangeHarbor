@@ -6,6 +6,7 @@ import (
 	"github.com/kzs0/reviewd/internal/contextpack"
 	"github.com/kzs0/reviewd/internal/git"
 	"github.com/kzs0/reviewd/internal/model"
+	"strings"
 )
 
 type Input struct {
@@ -15,6 +16,9 @@ type Input struct {
 	Minimum, Threshold int
 	RequirementsPass   bool
 	Anchors            []git.Anchor
+	// Excluded lists files left out of the model's input by trusted policy.
+	// They are recorded in coverage and don't make it incomplete.
+	Excluded []string
 }
 type Result struct {
 	Status                            string
@@ -42,7 +46,18 @@ func (e Engine) Run(ctx context.Context, i Input) (Result, error) {
 	if err != nil {
 		return r, err
 	}
+	for _, path := range i.Excluded {
+		p.Coverage = append(p.Coverage, contextpack.Entry{ID: "excluded:" + path, Status: "excluded_by_trusted_policy"})
+	}
 	r.Package = p
+	if len(i.Excluded) > 0 && !reviewable(i.Items) {
+		// Trusted exclusions removed every changed file: nothing would be
+		// reviewed, so the run is incomplete and can never be approved.
+		r.Package.Complete = false
+		r.Status = "input_incomplete"
+		r.Reasons = []string{"all_changes_excluded_by_trusted_policy"}
+		return r, nil
+	}
 	known := map[string]bool{}
 	for _, c := range p.Coverage {
 		if c.Status == "included" {
@@ -133,6 +148,14 @@ func validateAnchors(v model.Review, anchors []git.Anchor) error {
 		if !known[git.Anchor{Path: f.Path, Line: f.Line, Side: side}] {
 			return fmt.Errorf("finding outside canonical changed lines")
 		}
+		if f.Suggestion != "" {
+			end := max(f.SuggestionEndLine, f.Line)
+			for l := f.Line; l <= end; l++ {
+				if side != "new" || !known[git.Anchor{Path: f.Path, Line: l, Side: "new"}] {
+					return fmt.Errorf("suggestion outside new-side changed lines")
+				}
+			}
+		}
 	}
 	changed := map[string]bool{}
 	for a := range known {
@@ -144,4 +167,14 @@ func validateAnchors(v model.Review, anchors []git.Anchor) error {
 		}
 	}
 	return nil
+}
+
+// reviewable reports whether the diff item has any content left to review.
+func reviewable(items []contextpack.Item) bool {
+	for _, item := range items {
+		if item.ID == "diff" {
+			return strings.TrimSpace(item.Content) != ""
+		}
+	}
+	return true
 }
