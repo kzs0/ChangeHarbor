@@ -20,6 +20,7 @@ import (
 	gh "github.com/kzs0/reviewd/internal/forge/github"
 	gl "github.com/kzs0/reviewd/internal/forge/gitlab"
 	gitreader "github.com/kzs0/reviewd/internal/git"
+	"github.com/kzs0/reviewd/internal/model"
 	"github.com/kzs0/reviewd/internal/policy"
 	"github.com/kzs0/reviewd/internal/publish"
 	"github.com/kzs0/reviewd/internal/report"
@@ -73,9 +74,30 @@ type forgeConfig struct {
 	// Protections is "required" (default when empty) or "advisory", which
 	// approves regardless of the forge's protection settings (opt-in).
 	Protections string `json:"protections,omitempty"`
+	// LargeChanges is "" or "incomplete" (no review when the diff doesn't
+	// fit) or "partial" (review the whole files that fit). It changes what
+	// the model sees, so it is review identity.
+	LargeChanges string `json:"large_changes,omitempty"`
+	// Automatic review triggers (service only; not review identity).
+	// AutoDrafts is "" or "skip" (default) or "review".
+	AutoDrafts            string   `json:"auto_drafts,omitempty"`
+	AutoIgnoreAuthors     []string `json:"auto_ignore_authors,omitempty"`
+	AutoSkipLabels        []string `json:"auto_skip_labels,omitempty"`
+	AutoSkipTitleKeywords []string `json:"auto_skip_title_keywords,omitempty"`
+	// BotUsername is the login the token acts as, for the "@bot review"
+	// comment command and the retry hint of status comments.
+	BotUsername string `json:"bot_username,omitempty"`
 
-	// Set only when compiled from changeharbor.yaml.
+	// Set only when compiled from changeharbor.yaml. An inline policy or
+	// model config replaces PolicyFile or modelConfig.
 	name, response, modelConfig string
+	inlinePolicy                *policy.Policy
+	inlineModel                 *model.HTTPConfig
+	// GitHub App authentication (appID empty: token_env) and mirror
+	// transport. They are credentials and transport, not review identity.
+	appID, appKeyEnv, installationID, appSlug string
+	mirrorAuth, mirrorURL                     string
+	mirrorAuto                                bool
 }
 
 // pathInstruction applies Instructions when a changed file matches Paths.
@@ -95,11 +117,44 @@ type reviewIdentity struct {
 	Instructions     string            `json:",omitempty"`
 	PathInstructions []pathInstruction `json:",omitempty"`
 	Exclude          []string          `json:",omitempty"`
+	LargeChanges     string            `json:",omitempty"`
+}
+
+// hasPolicy reports whether a policy file or an inline policy is set.
+func (c forgeConfig) hasPolicy() bool { return c.PolicyFile != "" || c.inlinePolicy != nil }
+
+// loadPolicy returns the inline policy or loads the policy file.
+func (c forgeConfig) loadPolicy() (policy.Policy, error) {
+	if c.inlinePolicy != nil {
+		return *c.inlinePolicy, nil
+	}
+	return config.LoadPolicy(c.PolicyFile)
+}
+
+// policyRef names the policy in review identity: its path, or "inline".
+func (c forgeConfig) policyRef() string {
+	if c.inlinePolicy != nil {
+		return "inline"
+	}
+	return c.PolicyFile
+}
+
+// policyDigest is the digest of the configured policy.
+func (c forgeConfig) policyDigest() (string, error) {
+	p, e := c.loadPolicy()
+	if e != nil {
+		return "", e
+	}
+	return policyDigest(p), nil
 }
 
 func (c forgeConfig) identity() reviewIdentity {
-	return reviewIdentity{c.Provider, c.WebBase, c.APIBase, c.Owner, c.Repository, c.ProjectID, c.RepositoryID, c.SourceRepositoryID, c.RepoPath, c.PolicyFile, c.Branch,
-		c.Instructions, c.PathInstructions, c.Exclude}
+	large := c.LargeChanges
+	if large == "incomplete" {
+		large = "" // the default: configs without the key keep their digest
+	}
+	return reviewIdentity{c.Provider, c.WebBase, c.APIBase, c.Owner, c.Repository, c.ProjectID, c.RepositoryID, c.SourceRepositoryID, c.RepoPath, c.policyRef(), c.Branch,
+		c.Instructions, c.PathInstructions, c.Exclude, large}
 }
 
 type forgeCapture struct {
@@ -109,6 +164,10 @@ type forgeCapture struct {
 type forgeProvenance struct {
 	Capture                                   forgeCapture
 	ConfigDigest, PolicyDigest, PackageDigest string
+	// CommandID is the forge comment or note ID of the authorised review
+	// command that asked for this run, "" for automatic runs. It is part
+	// of the input identity, so a command is a fresh model request.
+	CommandID string `json:",omitempty"`
 }
 
 func loadForgeConfig(path string) (forgeConfig, error) {
@@ -172,6 +231,13 @@ func validateForgeConfig(c forgeConfig) (forgeConfig, error) {
 	if e := guidance.Validate("review"); e != nil {
 		return c, e
 	}
+	auto := config.AutoReviewSettings{Drafts: c.AutoDrafts, IgnoreAuthors: c.AutoIgnoreAuthors, SkipLabels: c.AutoSkipLabels, SkipTitleKeywords: c.AutoSkipTitleKeywords}
+	if e := (&config.ReviewSettings{LargeChanges: c.LargeChanges, Auto: &auto}).Validate("review"); e != nil {
+		return c, e
+	}
+	if c.BotUsername != "" && !config.ValidBotUsername(c.BotUsername) {
+		return c, errors.New("bot_username: invalid username")
+	}
 	if c.CommentMode == "post" && c.BotUserID == "" {
 		return c, errors.New("comment_mode post requires bot_user_id")
 	}
@@ -233,20 +299,15 @@ func changeURL(c forgeConfig, number int) string {
 }
 
 // syncMirror fetches the target branch and the change head from the
-// configured mirror remote. It is a no-op without sync_remote.
+// configured mirror remote or mirror.url. It is a no-op without a sync
+// source.
 func syncMirror(ctx context.Context, c forgeConfig, number int) error {
-	if c.SyncRemote == "" {
-		return nil
-	}
 	head := fmt.Sprintf("+refs/merge-requests/%d/head:refs/merge-requests/%d/head", number, number)
 	if c.Provider == "github" {
 		head = fmt.Sprintf("+refs/pull/%d/head:refs/pull/%d/head", number, number)
 	}
 	branch := "+refs/heads/" + c.Branch + ":refs/heads/" + c.Branch
-	if e := (gitreader.Reader{Repo: c.RepoPath}).Fetch(ctx, c.SyncRemote, branch, head); e != nil {
-		return fmt.Errorf("mirror sync from %q failed: %w", c.SyncRemote, e)
-	}
-	return nil
+	return fetchMirror(ctx, c, branch, head)
 }
 
 func gitlabClient(c forgeConfig) *gl.Client {
@@ -305,13 +366,12 @@ func captureForge(ctx context.Context, c forgeConfig, raw string) (forgeCapture,
 	if e != nil {
 		return forgeCapture{}, e
 	}
-	token := os.Getenv(c.TokenEnv)
-	if c.TokenEnv != "" && token == "" {
+	if c.appID == "" && c.TokenEnv != "" && os.Getenv(c.TokenEnv) == "" {
 		return forgeCapture{}, errors.New("forge credential unavailable")
 	}
 	out := forgeCapture{Provider: c.Provider, URL: raw, Number: n}
 	if c.Provider == "github" {
-		x, e := gh.NewClient(c.APIBase, token, nil, 1<<20).Change(ctx, c.Owner, c.Repository, n)
+		x, e := githubClient(c).Change(ctx, c.Owner, c.Repository, n)
 		if e != nil {
 			return out, e
 		}
@@ -329,26 +389,40 @@ func captureForge(ctx context.Context, c forgeConfig, raw string) (forgeCapture,
 	return out, nil
 }
 
-// fileDigest hashes model-relevant risk rules, excluding the inclusive approval
-// threshold. Current threshold is independently re-evaluated at publication.
-func fileDigest(path string) (string, error) {
-	f, e := os.Open(path)
-	if e != nil {
-		return "", e
-	}
-	defer f.Close()
-	p, e := policy.Decode(f)
-	if e != nil {
-		return "", e
-	}
+// policyDigest hashes model-relevant risk rules, excluding the inclusive
+// approval threshold. Current threshold is independently re-evaluated at
+// publication. It is the same for a JSON file, a YAML file and an inline
+// policy with the same content.
+func policyDigest(p policy.Policy) string {
 	p.AutoApproveMax = 0
-	return identityID(p), nil
+	return identityID(p)
+}
+
+// fileDigest is the policyDigest of a JSON or YAML policy file.
+func fileDigest(path string) (string, error) {
+	p, e := config.LoadPolicy(path)
+	if e != nil {
+		return "", e
+	}
+	return policyDigest(p), nil
 }
 
 // forgeConfigDigest covers review-relevant trusted mapping only; publication
 // switches and the bot identity can change without invalidating reviews.
 func forgeConfigDigest(c forgeConfig) string { return identityID(c.identity()) }
 func hostPolicyItem(minimum int, decision *policy.Decision, d gitreader.Diff, path string) (contextpack.Item, string, error) {
+	if path == "" {
+		return hostPolicyItemFor(minimum, decision, d, nil)
+	}
+	p, e := config.LoadPolicy(path)
+	if e != nil {
+		return contextpack.Item{}, "", e
+	}
+	return hostPolicyItemFor(minimum, decision, d, &p)
+}
+
+// hostPolicyItemFor is hostPolicyItem for a loaded policy (nil: none).
+func hostPolicyItemFor(minimum int, decision *policy.Decision, d gitreader.Diff, pol *policy.Policy) (contextpack.Item, string, error) {
 	facts := struct {
 		EnforcedMinimum            int
 		MatchedRules               []string
@@ -364,20 +438,9 @@ func hostPolicyItem(minimum int, decision *policy.Decision, d gitreader.Diff, pa
 		facts.MatchedRules = decision.MatchedRules
 		facts.HumanRequired = decision.HumanRequired
 	}
-	if path != "" {
-		f, e := os.Open(path)
-		if e != nil {
-			return contextpack.Item{}, "", e
-		}
-		p, e := policy.Decode(f)
-		f.Close()
-		if e != nil {
-			return contextpack.Item{}, "", e
-		}
-		facts.RubricDigest, e = fileDigest(path)
-		if e != nil {
-			return contextpack.Item{}, "", e
-		}
+	if pol != nil {
+		p := *pol
+		facts.RubricDigest = policyDigest(p)
 		for _, rule := range p.PathRules {
 			for _, change := range d.Files {
 				seen := map[string]bool{}
@@ -462,7 +525,7 @@ func forgeReviewCommand(ctx context.Context, args []string) (int, error) {
 	policyFile := f.String("policy", "", "trusted merge risk policy")
 	minimum := f.Int("minimum", 1, "base minimum")
 	threshold := f.Int("threshold", 3, "inclusive threshold")
-	cap := f.Int("max-bytes", 1<<20, "prompt cap")
+	cap := f.Int("max-bytes", 0, "prompt cap (default: derived from the model config, or 1 MiB for --response)")
 	if f.Parse(args) != nil || f.NArg() != 0 || *raw == "" {
 		return 2, nil
 	}
@@ -477,10 +540,14 @@ func forgeReviewCommand(ctx context.Context, args []string) (int, error) {
 	if *policyFile != "" && *policyFile != c.PolicyFile {
 		return 2, errors.New("policy must match trusted forge mapping")
 	}
+	var inline *model.HTTPConfig
 	if *response == "" && *modelConfig == "" {
-		*response, *modelConfig = c.response, c.modelConfig
+		*response, *modelConfig, inline = c.response, c.modelConfig, c.inlineModel
 	}
-	id, result, code, e := forgeReview(ctx, c, *raw, reviewOptions{State: sel.state, Response: *response, ModelConfig: *modelConfig, Minimum: *minimum, Threshold: *threshold, Cap: *cap})
+	if *cap < 0 {
+		return 2, errors.New("--max-bytes must be positive")
+	}
+	id, result, code, e := forgeReview(ctx, c, *raw, reviewOptions{State: sel.state, Response: *response, ModelConfig: *modelConfig, InlineModel: inline, Minimum: *minimum, Threshold: *threshold, Cap: *cap})
 	if e != nil {
 		return code, e
 	}
@@ -496,88 +563,168 @@ func forgeReviewCommand(ctx context.Context, args []string) (int, error) {
 
 type reviewOptions struct {
 	State, Response, ModelConfig string
-	Minimum, Threshold, Cap      int
+	// InlineModel is an inline model config; it replaces ModelConfig.
+	InlineModel             *model.HTTPConfig
+	Minimum, Threshold, Cap int
+	// CommandID is the comment or note ID of an accepted review command,
+	// "" otherwise (see forgeProvenance.CommandID).
+	CommandID string
+}
+
+// reviewFailure is an operational failure after the change was captured:
+// the review could not be completed for Reason (a host code), and RunID
+// names the attempt. Err is never shown on the forge.
+type reviewFailure struct {
+	Reason, RunID string
+	Capture       forgeCapture
+	Err           error
+}
+
+func (f *reviewFailure) Error() string { return f.Err.Error() }
+func (f *reviewFailure) Unwrap() error { return f.Err }
+
+// failureModel records whether the model call itself failed.
+type failureModel struct {
+	m      model.Model
+	failed bool
+}
+
+func (f *failureModel) Complete(ctx context.Context, r model.Request) (model.Response, error) {
+	out, e := f.m.Complete(ctx, r)
+	f.failed = f.failed || e != nil
+	return out, e
+}
+
+// promptLimits returns the request budget: derived from a live model's
+// configuration (lowered by an explicit cap), else the cap or 1 MiB.
+func promptLimits(modelConfig string, explicit int) (contextpack.Limits, error) {
+	c, e := loadModelConfig(modelConfig, nil)
+	if e != nil {
+		return contextpack.Limits{}, e
+	}
+	return promptLimitsFor(c, explicit)
+}
+
+// promptLimitsFor is promptLimits for a loaded model config (nil: none).
+func promptLimitsFor(c *model.HTTPConfig, explicit int) (contextpack.Limits, error) {
+	budget := explicit
+	if c != nil {
+		derived, e := model.PromptBudget(*c)
+		if e != nil {
+			return contextpack.Limits{}, e
+		}
+		if budget <= 0 || derived < budget {
+			budget = derived
+		}
+	}
+	if budget <= 0 {
+		budget = 1 << 20
+	}
+	return contextpack.Limits{MaxBytes: budget, MaxTokens: budget + 4096, ReserveTokens: 4096}, nil
 }
 
 // forgeReview captures the change from the forge API, syncs the mirror,
-// reviews it and saves the run with its immutable provenance.
+// reviews it and saves the run with its immutable provenance. Failures after
+// capture are *reviewFailure.
 func forgeReview(ctx context.Context, c forgeConfig, raw string, o reviewOptions) (string, review.Result, int, error) {
 	fail := func(code int, e error) (string, review.Result, int, error) { return "", review.Result{}, code, e }
-	if c.PolicyFile == "" {
+	if !c.hasPolicy() {
 		return fail(2, errors.New("trusted forge policy is required"))
 	}
 	captured, e := captureForge(ctx, c, raw)
 	if e != nil {
 		return fail(1, e)
 	}
-	if e = syncMirror(ctx, c, captured.Number); e != nil {
-		return fail(1, e)
-	}
-	if e = requireMirrorObjects(ctx, c, captured); e != nil {
-		return fail(1, e)
-	}
-	d, e := (gitreader.Reader{Repo: c.RepoPath}).Diff(ctx, captured.Target, captured.Head)
-	if e != nil {
-		return fail(1, e)
-	}
-	floor, e := evaluateDiffPolicy(ctx, c.PolicyFile, d)
+	pol, e := c.loadPolicy()
 	if e != nil {
 		return fail(2, e)
 	}
-	minimum := max(o.Minimum, floor.EnforcedMinimum)
-	threshold := min(o.Threshold, floor.Threshold)
-	pd, e := fileDigest(c.PolicyFile)
-	if e != nil {
-		return fail(2, e)
-	}
-	prov := forgeProvenance{Capture: captured, ConfigDigest: forgeConfigDigest(c), PolicyDigest: pd}
+	pd := policyDigest(pol)
+	prov := forgeProvenance{Capture: captured, ConfigDigest: forgeConfigDigest(c), PolicyDigest: pd, CommandID: o.CommandID}
 	inputID := identityID(prov)
 	runID := identityID(struct {
 		Input string
 		At    int64
 	}{inputID, time.Now().UnixNano()})
-	m, close, e := modelFor(ctx, o.ModelConfig, o.Response, o.State, runID)
+	failed := func(code int, reason string, e error) (string, review.Result, int, error) {
+		return fail(code, &reviewFailure{Reason: reason, RunID: runID, Capture: captured, Err: e})
+	}
+	if e = syncMirror(ctx, c, captured.Number); e != nil {
+		return failed(1, "mirror_unavailable", e)
+	}
+	if e = requireMirrorObjects(ctx, c, captured); e != nil {
+		return failed(1, "mirror_unavailable", e)
+	}
+	d, e := (gitreader.Reader{Repo: c.RepoPath}).Diff(ctx, captured.Target, captured.Head)
 	if e != nil {
-		return fail(2, e)
+		return failed(1, "internal_error", e)
+	}
+	floor, e := evaluatePolicy(ctx, pol, d)
+	if e != nil {
+		return failed(2, "internal_error", e)
+	}
+	minimum := max(o.Minimum, floor.EnforcedMinimum)
+	threshold := min(o.Threshold, floor.Threshold)
+	mc, e := loadModelConfig(o.ModelConfig, o.InlineModel)
+	if e != nil {
+		return failed(2, "internal_error", e)
+	}
+	limits, e := promptLimitsFor(mc, o.Cap)
+	if e != nil {
+		return failed(2, "internal_error", e)
+	}
+	m, close, e := modelForConfig(ctx, mc, o.Response, o.State, runID)
+	if e != nil {
+		return failed(2, "internal_error", e)
 	}
 	defer close()
 	kept, excluded, e := excludeFiles(d, c.Exclude)
 	if e != nil {
-		return fail(2, e)
+		return failed(2, "internal_error", e)
 	}
 	items, e := reviewContext(ctx, o.State, c.RepoPath, d.Head, kept.Patch)
 	if e != nil {
-		return fail(1, e)
+		return failed(1, "internal_error", e)
 	}
 	b, _ := json.Marshal(prov)
 	items = append(items, contextpack.Item{ID: "forge_identity", Layer: "trusted_identity", Content: string(b), Required: true})
-	hostItem, _, e := hostPolicyItem(minimum, &floor, d, c.PolicyFile)
+	hostItem, _, e := hostPolicyItemFor(minimum, &floor, d, &pol)
 	if e != nil {
-		return fail(2, e)
+		return failed(2, "internal_error", e)
 	}
 	items = append(items, hostItem)
 	if guidance, ok, e := guidanceItem(c, kept); e != nil {
-		return fail(2, e)
+		return failed(2, "internal_error", e)
 	} else if ok {
 		items = append([]contextpack.Item{guidance}, items...)
 	}
-	result, e := (review.Engine{Model: identityModel{m, inputID}}).Run(ctx, review.Input{Items: items, Limits: contextpack.Limits{MaxBytes: o.Cap, MaxTokens: o.Cap + 4096, ReserveTokens: 4096}, EvidenceIDs: []string{"diff", "forge_identity", "host_policy"}, Minimum: minimum, Threshold: threshold, Anchors: kept.Anchors, Excluded: excluded, RequirementsPass: false})
+	files := []review.FilePatch{}
+	for _, f := range kept.Files {
+		files = append(files, review.FilePatch{OldPath: f.OldPath, NewPath: f.NewPath, Patch: f.Patch})
+	}
+	tracked := &failureModel{m: identityModel{m, inputID}}
+	result, e := (review.Engine{Model: tracked}).Run(ctx, review.Input{Items: items, Limits: limits, EvidenceIDs: []string{"diff", "forge_identity", "host_policy"}, Minimum: minimum, Threshold: threshold, Anchors: kept.Anchors, Excluded: excluded, RequirementsPass: false,
+		Files: files, Partial: c.LargeChanges == "partial"})
 	if e != nil {
-		return fail(1, e)
+		reason := "internal_error"
+		if tracked.failed {
+			reason = "model_request_failed"
+		}
+		return failed(1, reason, e)
 	}
 	id, e := saveRun(ctx, o.State, "review", result)
 	if e != nil {
-		return fail(1, e)
+		return failed(1, "internal_error", e)
 	}
 	prov.PackageDigest = result.Package.Digest
 	s, e := storage.Open(o.State)
 	if e != nil {
-		return fail(1, e)
+		return failed(1, "internal_error", e)
 	}
 	defer s.Close()
 	b, _ = json.Marshal(prov)
 	if e = s.Save(ctx, "review_provenance", id, b); e != nil {
-		return fail(1, e)
+		return failed(1, "internal_error", e)
 	}
 	return id, result, 0, nil
 }
@@ -653,12 +800,20 @@ func publishRun(ctx context.Context, c forgeConfig, s *storage.Store, runID stri
 	if p.ConfigDigest != forgeConfigDigest(c) || p.PackageDigest != r.Package.Digest {
 		return nil, 4, errors.New("trusted configuration or review package changed")
 	}
-	pd, e := fileDigest(c.PolicyFile)
+	pd, e := c.policyDigest()
 	if e != nil {
 		return nil, 2, e
 	}
 	if pd != p.PolicyDigest {
 		return nil, 4, errors.New("review policy changed")
+	}
+	if r.Status != "completed" {
+		// Only a complete review can ever be approved: no forge calls.
+		reason := fmt.Sprintf("review did not complete (%s)", r.Status)
+		if r.Status == "partial" {
+			reason = "partial review: some files were not reviewed; approval requires a complete review"
+		}
+		return publish.Publication{State: "withheld", Reason: reason}, 4, nil
 	}
 	var remote interface {
 		publish.Remote
@@ -715,7 +870,7 @@ type githubPublication struct {
 }
 
 func (g *githubPublication) client() *gh.Client {
-	return gh.NewClient(g.c.APIBase, os.Getenv(g.c.TokenEnv), nil, 1<<20)
+	return githubClient(g.c)
 }
 func (g *githubPublication) withheldReason() string { return g.reason }
 func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, error) {
@@ -723,7 +878,7 @@ func (g *githubPublication) Refresh(ctx context.Context) (publish.Observation, e
 	if e != nil {
 		return publish.Observation{}, e
 	}
-	pd, e := fileDigest(g.c.PolicyFile)
+	pd, e := g.c.policyDigest()
 	if e != nil {
 		return publish.Observation{}, e
 	}
@@ -810,12 +965,7 @@ func localRevisions(ctx context.Context, cfg forgeConfig, reviewed, live forgeCa
 // hostPolicyAllows re-evaluates the trusted host risk policy against the live
 // diff and the provider-verified checks.
 func hostPolicyAllows(ctx context.Context, cfg forgeConfig, result review.Result, d gitreader.Diff, passed map[string]bool) (bool, string, error) {
-	f, e := os.Open(cfg.PolicyFile)
-	if e != nil {
-		return false, "", e
-	}
-	p, e := policy.Decode(f)
-	f.Close()
+	p, e := cfg.loadPolicy()
 	if e != nil {
 		return false, "", e
 	}
@@ -858,7 +1008,7 @@ func (g *gitlabPublication) withheldReason() string { return g.reason }
 // Refresh re-reads the merge request once (via Collect) so the identity,
 // native requirements and pipeline evidence come from one live snapshot.
 func (g *gitlabPublication) Refresh(ctx context.Context) (publish.Observation, error) {
-	pd, e := fileDigest(g.c.PolicyFile)
+	pd, e := g.c.policyDigest()
 	if e != nil {
 		return publish.Observation{}, e
 	}
@@ -971,14 +1121,56 @@ func summaryComment(ctx context.Context, c forgeConfig, s *storage.Store, runID,
 	if c.CommentMode == "off" {
 		return publish.CommentPublication{RunID: runID, ChangeKey: key, State: "off", Reason: "comments are off"}, 0, nil
 	}
-	rendered, e := report.RenderReview(r)
-	if e != nil {
-		return publish.CommentPublication{}, 1, e
+	var body string
+	if reason, ok := statusReason(r); ok {
+		var e error
+		body, e = publish.RenderStatus(publish.StatusContent{ChangeKey: key, RunID: runID, Head: p.Capture.Head, Status: r.Status, Reason: reason, BotUsername: c.BotUsername, Provider: c.Provider})
+		if e != nil {
+			return publish.CommentPublication{}, 1, e
+		}
+	} else {
+		rendered, e := report.RenderReview(r)
+		if e != nil {
+			return publish.CommentPublication{}, 1, e
+		}
+		notReviewed := 0
+		if r.Status == "partial" {
+			for _, cov := range r.Package.Coverage {
+				if strings.HasPrefix(cov.ID, "file:") && cov.Status == "not_included_budget" {
+					notReviewed++
+				}
+			}
+		}
+		body, e = publish.RenderComment(publish.CommentContent{ChangeKey: key, RunID: runID, Head: p.Capture.Head, Status: r.Status,
+			ModelRisk: r.Review.ModelMergeRisk, Minimum: r.Minimum, EffectiveRisk: r.EffectiveRisk, Threshold: r.Threshold, Report: rendered.Markdown, NotReviewed: notReviewed})
+		if e != nil {
+			return publish.CommentPublication{}, 1, e
+		}
 	}
-	body, e := publish.RenderComment(publish.CommentContent{ChangeKey: key, RunID: runID, Head: p.Capture.Head, Status: r.Status,
-		ModelRisk: r.Review.ModelMergeRisk, Minimum: r.Minimum, EffectiveRisk: r.EffectiveRisk, Threshold: r.Threshold, Report: rendered.Markdown})
-	if e != nil {
-		return publish.CommentPublication{}, 1, e
+	return postSummary(ctx, c, s, runID, key, p, body)
+}
+
+// statusReason returns the status comment reason for a run that did not
+// complete, or false for completed and partial runs. Only host codes are
+// returned: an invalid_output run's own reasons can quote model output.
+func statusReason(r review.Result) (string, bool) {
+	switch r.Status {
+	case "completed", "partial":
+		return "", false
+	case "invalid_output":
+		return "invalid_output", true
+	}
+	if len(r.Reasons) == 1 && publish.StatusReasonKnown(r.Reasons[0]) && r.Reasons[0] != "invalid_output" {
+		return r.Reasons[0], true
+	}
+	return "internal_error", true
+}
+
+// postSummary publishes, prints (shadow) or skips (off) a summary body
+// through the single owned summary comment.
+func postSummary(ctx context.Context, c forgeConfig, s *storage.Store, runID, key string, p forgeProvenance, body string) (publish.CommentPublication, int, error) {
+	if c.CommentMode == "off" {
+		return publish.CommentPublication{RunID: runID, ChangeKey: key, State: "off", Reason: "comments are off"}, 0, nil
 	}
 	if c.CommentMode != "post" {
 		return publish.CommentPublication{RunID: runID, ChangeKey: key, State: "shadow", Reason: "comment posting disabled", Body: body}, 0, nil
@@ -1000,6 +1192,9 @@ func inlineComments(ctx context.Context, c forgeConfig, s *storage.Store, runID,
 	if c.InlineCommentMode == "off" {
 		return publish.InlinePublication{RunID: runID, ChangeKey: key, State: "off", Reason: "inline comments are off"}, 0, nil
 	}
+	if r.Status != "completed" && r.Status != "partial" {
+		return publish.InlinePublication{RunID: runID, ChangeKey: key, State: "skipped", Reason: "review did not complete; inline comments left unchanged"}, 0, nil
+	}
 	targets, present, e := publish.BuildInlineTargets(key, runID, r.Review.Findings, publish.InlineOptions{Provider: c.Provider, Suggestions: c.Suggestions != "off", MinSeverity: c.InlineMinSeverity})
 	if e != nil {
 		return publish.InlinePublication{}, 1, e
@@ -1019,7 +1214,7 @@ func inlineComments(ctx context.Context, c forgeConfig, s *storage.Store, runID,
 		targets, skipped = gitlabPositionPaths(targets, diffs)
 	}
 	service := publish.InlineService{Remote: &forgeInline{forgeComments{c: c, provenance: p}}, Audit: s}
-	out, e := service.Publish(ctx, publish.InlineRequest{RunID: runID, ChangeKey: key, BotID: c.BotUserID, Targets: targets, Present: append(present, skipped...)})
+	out, e := service.Publish(ctx, publish.InlineRequest{RunID: runID, ChangeKey: key, BotID: c.BotUserID, Targets: targets, Present: append(present, skipped...), KeepAbsent: r.Status == "partial"})
 	if e != nil {
 		return publish.InlinePublication{}, 1, e
 	}
@@ -1148,7 +1343,7 @@ func (f *forgeComments) List(ctx context.Context) ([]publish.RemoteComment, erro
 }
 
 func (f *forgeComments) github() *gh.Client {
-	return gh.NewClient(f.c.APIBase, os.Getenv(f.c.TokenEnv), nil, 1<<20)
+	return githubClient(f.c)
 }
 
 func (f *forgeComments) Create(ctx context.Context, body string) (publish.RemoteComment, error) {
@@ -1306,7 +1501,7 @@ func liveChange(ctx context.Context, c forgeConfig, n int) (open bool, head, tar
 		ch, e := gitlabClient(c).Change(ctx, c.ProjectID, n)
 		return ch.State == "opened", ch.HeadOID, ch.TargetOID, e
 	}
-	ch, e := gh.NewClient(c.APIBase, os.Getenv(c.TokenEnv), nil, 1<<20).Change(ctx, c.Owner, c.Repository, n)
+	ch, e := githubClient(c).Change(ctx, c.Owner, c.Repository, n)
 	return ch.State != "closed", ch.HeadOID, ch.TargetOID, e
 }
 
@@ -1321,7 +1516,7 @@ func withdrawApproval(ctx context.Context, c forgeConfig, n int, a activeApprova
 	if a.RemoteID == "" {
 		return nil
 	}
-	return gh.NewClient(c.APIBase, os.Getenv(c.TokenEnv), nil, 1<<20).DismissReview(ctx, c.Owner, c.Repository, n, a.RemoteID,
+	return githubClient(c).DismissReview(ctx, c.Owner, c.Repository, n, a.RemoteID,
 		"ChangeHarbor: the reviewed commit or target changed; this approval no longer applies.")
 }
 
@@ -1373,10 +1568,8 @@ func doctorRun(ctx context.Context, c forgeConfig) (doctorReport, error) {
 		return doctorReport{}, e
 	}
 	mirror := gl.Check{Name: "mirror", OK: true, Detail: "branch " + c.Branch + " resolves in " + c.RepoPath}
-	if c.SyncRemote != "" {
-		if err := (gitreader.Reader{Repo: c.RepoPath}).Fetch(ctx, c.SyncRemote, "+refs/heads/"+c.Branch+":refs/heads/"+c.Branch); err != nil {
-			mirror = gl.Check{Name: "mirror", Severity: "error", Detail: "sync from " + c.SyncRemote + " failed: " + err.Error()}
-		}
+	if err := fetchMirror(ctx, c, "+refs/heads/"+c.Branch+":refs/heads/"+c.Branch); err != nil {
+		mirror = gl.Check{Name: "mirror", Severity: "error", Detail: err.Error()}
 	}
 	if mirror.OK {
 		if _, err := (gitreader.Reader{Repo: c.RepoPath}).Resolve(ctx, c.Branch); err != nil {

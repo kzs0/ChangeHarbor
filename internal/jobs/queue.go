@@ -14,6 +14,11 @@ import (
 type Job struct {
 	ID, Key, ChangeID, Kind string
 	Generation, Attempts    int
+	// Force marks a review a person asked for (a review command). A forced
+	// job is never superseded, so its intent survives a newer event for
+	// the same change that automatic review rules might skip. It still
+	// supersedes older unforced jobs; both review the live head.
+	Force bool
 }
 type Queue struct{ db *sql.DB }
 
@@ -28,6 +33,15 @@ func Open(path string) (*Queue, error) {
 	}
 	db.SetMaxOpenConns(1)
 	_, e = db.Exec(`CREATE TABLE IF NOT EXISTS queue_jobs(id TEXT PRIMARY KEY,idem_key TEXT UNIQUE NOT NULL,change_id TEXT NOT NULL,kind TEXT NOT NULL,generation INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',worker TEXT NOT NULL DEFAULT '',expires INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS queue_receipts(delivery TEXT PRIMARY KEY,payload BLOB NOT NULL); CREATE TABLE IF NOT EXISTS queue_generations(change_id TEXT PRIMARY KEY,provider_time INTEGER NOT NULL,local_generation INTEGER NOT NULL);`)
+	if e != nil {
+		db.Close()
+		return nil, e
+	}
+	// Queues created before forced jobs existed gain the column.
+	var has int
+	if e = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('queue_jobs') WHERE name='force'").Scan(&has); e == nil && has == 0 {
+		_, e = db.Exec("ALTER TABLE queue_jobs ADD COLUMN force INTEGER NOT NULL DEFAULT 0")
+	}
 	if e != nil {
 		db.Close()
 		return nil, e
@@ -74,9 +88,9 @@ func (q *Queue) Enqueue(ctx context.Context, j Job) (bool, error) {
 	}
 	defer tx.Rollback()
 	var existing Job
-	e = tx.QueryRowContext(ctx, "SELECT id,change_id,kind,generation FROM queue_jobs WHERE idem_key=?", j.Key).Scan(&existing.ID, &existing.ChangeID, &existing.Kind, &existing.Generation)
+	e = tx.QueryRowContext(ctx, "SELECT id,change_id,kind,generation,force FROM queue_jobs WHERE idem_key=?", j.Key).Scan(&existing.ID, &existing.ChangeID, &existing.Kind, &existing.Generation, &existing.Force)
 	if e == nil {
-		if existing.ID != j.ID || existing.ChangeID != j.ChangeID || existing.Kind != j.Kind || existing.Generation != j.Generation {
+		if existing.ID != j.ID || existing.ChangeID != j.ChangeID || existing.Kind != j.Kind || existing.Generation != j.Generation || existing.Force != j.Force {
 			return false, errors.New("conflicting job key")
 		}
 		return false, nil
@@ -92,15 +106,17 @@ func (q *Queue) Enqueue(ctx context.Context, j Job) (bool, error) {
 			return false, e
 		}
 		if j.Generation < max {
-			state = "superseded"
+			if !j.Force {
+				state = "superseded"
+			}
 		} else {
-			_, e = tx.ExecContext(ctx, "UPDATE queue_jobs SET state='superseded' WHERE change_id=? AND kind='review' AND generation<? AND state IN ('pending','running')", j.ChangeID, j.Generation)
+			_, e = tx.ExecContext(ctx, "UPDATE queue_jobs SET state='superseded' WHERE change_id=? AND kind='review' AND generation<? AND state IN ('pending','running') AND force=0", j.ChangeID, j.Generation)
 			if e != nil {
 				return false, e
 			}
 		}
 	}
-	_, e = tx.ExecContext(ctx, "INSERT INTO queue_jobs(id,idem_key,change_id,kind,generation,state) VALUES(?,?,?,?,?,?)", j.ID, j.Key, j.ChangeID, j.Kind, j.Generation, state)
+	_, e = tx.ExecContext(ctx, "INSERT INTO queue_jobs(id,idem_key,change_id,kind,generation,state,force) VALUES(?,?,?,?,?,?,?)", j.ID, j.Key, j.ChangeID, j.Kind, j.Generation, state, j.Force)
 	if e != nil {
 		return false, e
 	}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -34,8 +35,12 @@ func (c *Client) request(ctx context.Context, method, path string, input, out an
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	auth, e := c.authorization(ctx)
+	if e != nil {
+		return e
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
 	}
 	hc := *c.http
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -418,4 +423,117 @@ func (c *Client) UpdateReviewComment(ctx context.Context, owner, repo, id, body 
 		return Comment{}, rejection(e)
 	}
 	return w.comment()
+}
+
+// positiveID reports whether id is a canonical positive decimal number.
+func positiveID(id string) bool {
+	n, err := strconv.ParseInt(id, 10, 64)
+	return err == nil && n > 0 && strconv.FormatInt(n, 10) == id
+}
+
+// IssueComment is the API's copy of a comment on an issue or pull request.
+// Body is untrusted.
+type IssueComment struct {
+	ID, Body, AuthorID, AuthorLogin, AuthorAssociation string
+	IssueNumber                                        int
+}
+
+// IssueComment reads one issue comment by ID.
+func (c *Client) IssueComment(ctx context.Context, owner, repo, id string) (IssueComment, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return IssueComment{}, e
+	}
+	if !positiveID(id) {
+		return IssueComment{}, errors.New("invalid comment ID")
+	}
+	var x struct {
+		ID       int64  `json:"id"`
+		Body     string `json:"body"`
+		IssueURL string `json:"issue_url"`
+		User     struct {
+			ID    int64  `json:"id"`
+			Login string `json:"login"`
+		} `json:"user"`
+		AuthorAssociation string `json:"author_association"`
+	}
+	if e = c.request(ctx, "GET", p+"/issues/comments/"+id, nil, &x); e != nil {
+		return IssueComment{}, e
+	}
+	if fmt.Sprint(x.ID) != id || x.User.ID <= 0 {
+		return IssueComment{}, errors.New("invalid comment identity")
+	}
+	i := strings.LastIndex(x.IssueURL, "/issues/")
+	if i < 0 || !strings.HasSuffix(strings.ToLower(x.IssueURL[:i]), strings.ToLower(p)) {
+		return IssueComment{}, errors.New("comment is not on an issue of this repository")
+	}
+	n, err := strconv.Atoi(x.IssueURL[i+len("/issues/"):])
+	if err != nil || n <= 0 {
+		return IssueComment{}, errors.New("comment is not on an issue of this repository")
+	}
+	return IssueComment{ID: id, Body: x.Body, AuthorID: fmt.Sprint(x.User.ID), AuthorLogin: x.User.Login, AuthorAssociation: x.AuthorAssociation, IssueNumber: n}, nil
+}
+
+// User is the token's user.
+type User struct{ ID, Username string }
+
+// Me returns the token's user ID and login. GitHub App installation tokens
+// cannot call this endpoint.
+func (c *Client) Me(ctx context.Context) (User, error) {
+	var x struct {
+		ID    int64  `json:"id"`
+		Login string `json:"login"`
+	}
+	if e := c.request(ctx, "GET", "/user", nil, &x); e != nil {
+		return User{}, e
+	}
+	if x.ID <= 0 || x.Login == "" {
+		return User{}, errors.New("missing GitHub user identity")
+	}
+	return User{ID: fmt.Sprint(x.ID), Username: x.Login}, nil
+}
+
+// validLoginPattern is the form of a GitHub user or App bot login.
+var validLoginPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$`)
+
+// ValidLogin reports whether login has the form of a GitHub login.
+func ValidLogin(login string) bool { return validLoginPattern.MatchString(login) }
+
+// Permission is a user's permission on a repository. Permission is
+// GitHub's base level (admin, write, read or none); RoleName is the role
+// (admin, maintain, write, triage, read or a custom role name), "" when the
+// API omits it.
+type Permission struct{ Permission, RoleName, Login string }
+
+// CollaboratorPermission reads login's permission on owner/repo. A user who
+// is not a collaborator (404) has Permission{} and no error.
+func (c *Client) CollaboratorPermission(ctx context.Context, owner, repo, login string) (Permission, error) {
+	p, e := repoPath(owner, repo)
+	if e != nil {
+		return Permission{}, e
+	}
+	if !ValidLogin(login) {
+		return Permission{}, errors.New("invalid GitHub login")
+	}
+	var x struct {
+		Permission string `json:"permission"`
+		RoleName   string `json:"role_name"`
+		User       struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if e = c.request(ctx, "GET", p+"/collaborators/"+url.PathEscape(login)+"/permission", nil, &x); e != nil {
+		var se *StatusError
+		if errors.As(e, &se) && se.Code == http.StatusNotFound {
+			return Permission{}, nil
+		}
+		return Permission{}, e
+	}
+	if !strings.EqualFold(x.User.Login, login) {
+		return Permission{}, errors.New("GitHub permission identity mismatch")
+	}
+	if x.Permission == "" {
+		return Permission{}, errors.New("missing GitHub permission")
+	}
+	return Permission{Permission: x.Permission, RoleName: x.RoleName, Login: x.User.Login}, nil
 }

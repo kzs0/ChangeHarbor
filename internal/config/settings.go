@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -16,18 +17,30 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kzs0/reviewd/internal/model"
 	"github.com/kzs0/reviewd/internal/policy"
 )
 
-// Settings is changeharbor.yaml. Policies and model configs remain
-// separate files referenced by path. See docs/design/config.md.
+// Settings is changeharbor.yaml. Policies and model configs are files
+// referenced by path or inline mappings. See docs/design/config.md and
+// docs/design/config-v1-layout.md.
 type Settings struct {
-	Version      int                           `json:"version"`
-	Schema       string                        `json:"$schema,omitempty"`
-	State        string                        `json:"state,omitempty"`
-	Service      *ServiceSettings              `json:"service,omitempty"`
-	Models       map[string]string             `json:"models,omitempty"`
+	Version int              `json:"version"`
+	Schema  string           `json:"$schema,omitempty"`
+	State   string           `json:"state,omitempty"`
+	Service *ServiceSettings `json:"service,omitempty"`
+	// Models maps a name to a model config file's absolute path, or to ""
+	// for an inline config (see InlineModels).
+	Models map[string]string `json:"models,omitempty"`
+	// Defaults is the defaults block as written; its values are merged
+	// into every RepositorySettings.
+	Defaults     json.RawMessage               `json:"defaults,omitempty"`
 	Repositories map[string]RepositorySettings `json:"repositories"`
+
+	// InlineModels holds inline model configs by name.
+	InlineModels map[string]model.HTTPConfig `json:"-"`
+	// Warnings has one deprecation warning per deprecated key used.
+	Warnings []string `json:"-"`
 }
 
 type ServiceSettings struct {
@@ -38,13 +51,18 @@ type ServiceSettings struct {
 	ReconciliationInterval string `json:"reconciliation_interval,omitempty"`
 }
 
+// RepositorySettings is one repository's effective configuration. The
+// deprecated fields TokenEnv, TokenScheme, BotUserID, BotUsername,
+// GitHub.App and Review.Auto mirror Auth and Triggers after decoding.
 type RepositorySettings struct {
 	URL         string           `json:"url"`
 	Provider    string           `json:"provider,omitempty"`
 	APIURL      string           `json:"api_url,omitempty"`
+	Auth        *AuthSettings    `json:"auth,omitempty"`
 	TokenEnv    string           `json:"token_env"`
 	TokenScheme string           `json:"token_scheme,omitempty"`
 	BotUserID   string           `json:"bot_user_id,omitempty"`
+	BotUsername string           `json:"bot_username,omitempty"`
 	ForkSource  string           `json:"fork_source,omitempty"`
 	Mirror      MirrorSettings   `json:"mirror"`
 	Branch      string           `json:"branch,omitempty"`
@@ -56,11 +74,30 @@ type RepositorySettings struct {
 	GitHub      *GitHubSettings  `json:"github,omitempty"`
 	Summary     *SummarySettings `json:"summary,omitempty"`
 	Review      *ReviewSettings  `json:"review,omitempty"`
+	// Triggers are the automatic review controls (review.auto before).
+	Triggers *AutoReviewSettings `json:"triggers,omitempty"`
+
+	// InlinePolicy is an inline policy; Policy is "" then.
+	InlinePolicy *policy.Policy `json:"-"`
+}
+
+// AuthSettings are a repository's credentials and bot identity.
+type AuthSettings struct {
+	TokenEnv    string             `json:"token_env,omitempty"`
+	TokenScheme string             `json:"token_scheme,omitempty"`
+	GitHubApp   *GitHubAppSettings `json:"github_app,omitempty"`
+	BotUserID   string             `json:"bot_user_id,omitempty"`
+	BotUsername string             `json:"bot_username,omitempty"`
 }
 
 type MirrorSettings struct {
 	Path string `json:"path"`
 	Sync string `json:"sync,omitempty"`
+	// Auth is "none" (credentials come from the mirror's own git config)
+	// or "token" (the forge token is passed to git through the environment).
+	Auth string `json:"auth,omitempty"`
+	// URL is the clone/fetch URL; empty means the repository URL + ".git".
+	URL string `json:"url,omitempty"`
 }
 
 type PublishSettings struct {
@@ -82,6 +119,61 @@ type ReviewSettings struct {
 	Instructions     string            `json:"instructions,omitempty"`
 	PathInstructions []PathInstruction `json:"path_instructions,omitempty"`
 	Exclude          []string          `json:"exclude,omitempty"`
+	// LargeChanges is what to do when the diff doesn't fit the model's
+	// request budget: incomplete (no review) or partial (review the files
+	// that fit). It changes what the model sees, so it is review identity.
+	LargeChanges string `json:"large_changes,omitempty"`
+	// Auto is the deprecated spelling of triggers; after decoding it
+	// mirrors RepositorySettings.Triggers. It is not review identity.
+	Auto *AutoReviewSettings `json:"auto,omitempty"`
+}
+
+// AutoReviewSettings are the service's automatic review trigger controls.
+type AutoReviewSettings struct {
+	Drafts            string   `json:"drafts,omitempty"`
+	IgnoreAuthors     []string `json:"ignore_authors,omitempty"`
+	SkipLabels        []string `json:"skip_labels,omitempty"`
+	SkipTitleKeywords []string `json:"skip_title_keywords,omitempty"`
+}
+
+var (
+	authorPattern = regexp.MustCompile(`^[A-Za-z0-9*][A-Za-z0-9_.*\[\]-]*$`)
+	usernameRE    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(\[bot\])?$`)
+)
+
+// ValidAuthorPattern reports whether p is a usable review.auto.ignore_authors
+// pattern.
+func ValidAuthorPattern(p string) bool { return len(p) <= 255 && authorPattern.MatchString(p) }
+
+// ValidBotUsername reports whether u is a usable bot username.
+func ValidBotUsername(u string) bool { return len(u) <= 255 && usernameRE.MatchString(u) }
+
+// Validate checks automatic review settings; at prefixes error paths.
+func (a *AutoReviewSettings) Validate(at string) error {
+	if a == nil {
+		return nil
+	}
+	if a.Drafts != "" {
+		if e := enum(at+".drafts", a.Drafts, "skip", "review"); e != nil {
+			return e
+		}
+	}
+	for i, p := range a.IgnoreAuthors {
+		if !ValidAuthorPattern(p) {
+			return fmt.Errorf("%s.ignore_authors[%d]: invalid author pattern", at, i)
+		}
+	}
+	for i, l := range a.SkipLabels {
+		if l == "" {
+			return fmt.Errorf("%s.skip_labels[%d]: empty value", at, i)
+		}
+	}
+	for i, k := range a.SkipTitleKeywords {
+		if k == "" {
+			return fmt.Errorf("%s.skip_title_keywords[%d]: empty value", at, i)
+		}
+	}
+	return nil
 }
 
 // PathInstruction applies Instructions when a changed file matches Paths.
@@ -102,6 +194,14 @@ func validGlob(pattern string) bool {
 func (r *ReviewSettings) Validate(at string) error {
 	if r == nil {
 		return nil
+	}
+	if r.LargeChanges != "" {
+		if e := enum(at+".large_changes", r.LargeChanges, "incomplete", "partial"); e != nil {
+			return e
+		}
+	}
+	if e := r.Auto.Validate(at + ".auto"); e != nil {
+		return e
 	}
 	size := len(r.Instructions)
 	for i, g := range r.Exclude {
@@ -137,7 +237,36 @@ type GitLabSettings struct {
 }
 
 type GitHubSettings struct {
-	RequiredChecks map[string]string `json:"required_checks,omitempty"`
+	RequiredChecks map[string]string  `json:"required_checks,omitempty"`
+	App            *GitHubAppSettings `json:"app,omitempty"`
+}
+
+// GitHubAppSettings authenticates a GitHub repository as a GitHub App
+// instead of with token_env.
+type GitHubAppSettings struct {
+	AppID          string `json:"app_id"`
+	PrivateKeyEnv  string `json:"private_key_env"`
+	InstallationID string `json:"installation_id,omitempty"`
+}
+
+// App returns the repository's GitHub App settings, or nil.
+func (r RepositorySettings) App() *GitHubAppSettings {
+	if r.GitHub == nil {
+		return nil
+	}
+	return r.GitHub.App
+}
+
+// MirrorURL is the URL the mirror is cloned and fetched from.
+func (r RepositorySettings) MirrorURL() string {
+	if r.Mirror.URL != "" {
+		return r.Mirror.URL
+	}
+	u := strings.TrimRight(r.URL, "/")
+	if strings.HasSuffix(u, ".git") {
+		return u
+	}
+	return u + ".git"
 }
 
 type SummarySettings struct {
@@ -146,7 +275,8 @@ type SummarySettings struct {
 }
 
 // Sources maps a dotted key path to where its effective value came from:
-// "file" or "default" (callers add "env", "flag", "lock" and "policy").
+// "file", "defaults" (inherited from the defaults block) or "default"
+// (callers add "env", "flag", "lock" and "policy").
 type Sources map[string]string
 
 var (
@@ -173,8 +303,10 @@ func LoadSettings(path string) (Settings, Sources, error) {
 	return DecodeSettings(f, abs)
 }
 
-// DecodeSettings strictly decodes settings, applies documented defaults and
-// validates them. Errors name the key path and suggest close matches.
+// DecodeSettings strictly decodes settings, resolves deprecated spellings,
+// merges the defaults block into every repository, applies documented
+// defaults and validates the result. Errors name the key path and suggest
+// close matches.
 func DecodeSettings(r io.Reader, baseDir string) (Settings, Sources, error) {
 	var s Settings
 	raw, e := io.ReadAll(io.LimitReader(r, (1<<20)+1))
@@ -184,7 +316,7 @@ func DecodeSettings(r io.Reader, baseDir string) (Settings, Sources, error) {
 	if len(raw) > 1<<20 {
 		return s, nil, errors.New("config: exceeds 1 MiB")
 	}
-	if raw, e = yamlToJSON(raw, reflect.TypeOf(s)); e != nil {
+	if raw, e = yamlToJSONWith(raw, reflect.TypeOf(s), settingsHook); e != nil {
 		return s, nil, fmt.Errorf("config: %w", e)
 	}
 	if e = validateJSON(raw); e != nil {
@@ -196,14 +328,27 @@ func DecodeSettings(r io.Reader, baseDir string) (Settings, Sources, error) {
 	if e = d.Decode(&tree); e != nil {
 		return s, nil, fmt.Errorf("config: %w", e)
 	}
+	if e = checkDefaultsKeys(tree); e != nil {
+		return s, nil, fmt.Errorf("config: %w", e)
+	}
 	if e = checkTree("", reflect.TypeOf(s), tree); e != nil {
 		return s, nil, fmt.Errorf("config: %w", e)
 	}
-	if e = json.Unmarshal(raw, &s); e != nil {
+	l, e := resolveLayout(tree.(map[string]any))
+	if e != nil {
 		return s, nil, fmt.Errorf("config: %w", e)
 	}
+	if e = json.Unmarshal(l.flat, &s); e != nil {
+		return s, nil, fmt.Errorf("config: %w", e)
+	}
+	s.Defaults, s.InlineModels, s.Warnings = l.defaults, l.inlineModels, l.warnings
+	for n, p := range l.inlinePolicies {
+		r := s.Repositories[n]
+		r.InlinePolicy = p
+		s.Repositories[n] = r
+	}
 	src := Sources{}
-	if e = s.normalize(tree, baseDir, src); e != nil {
+	if e = s.normalize(baseDir, src, l); e != nil {
 		return s, nil, fmt.Errorf("config: %w", e)
 	}
 	return s, src, nil
@@ -227,7 +372,55 @@ func enum(path, v string, allowed ...string) error {
 	return errors.New(msg)
 }
 
-func (s *Settings) normalize(tree any, base string, src Sources) error {
+// checkPublish validates the publish values that are set; at prefixes paths.
+func checkPublish(at string, pub PublishSettings) error {
+	for _, c := range []struct {
+		key, value string
+		allowed    []string
+	}{
+		{"approvals", pub.Approvals, []string{"off", "shadow", "submit"}},
+		{"comments", pub.Comments, []string{"off", "shadow", "post"}},
+		{"inline_comments", pub.InlineComments, []string{"off", "shadow", "post"}},
+		{"suggestions", pub.Suggestions, []string{"off", "include"}},
+		{"inline_min_severity", pub.InlineMinSeverity, []string{"info", "low", "medium", "high", "critical"}},
+		{"protections", pub.Protections, []string{"required", "advisory"}},
+	} {
+		if c.value != "" {
+			if e := enum(at+"."+c.key, c.value, c.allowed...); e != nil {
+				return e
+			}
+		}
+	}
+	return nil
+}
+
+// checkApp validates the GitHub App values that are set; at is the path of
+// the github_app (or github.app) block.
+func checkApp(at string, app *GitHubAppSettings) error {
+	if app.AppID != "" && !numericID.MatchString(app.AppID) {
+		return fmt.Errorf("%s.app_id: must be a numeric App ID", at)
+	}
+	if app.PrivateKeyEnv != "" && !envName.MatchString(app.PrivateKeyEnv) {
+		return fmt.Errorf("%s.private_key_env: invalid environment variable name", at)
+	}
+	if app.InstallationID != "" && !numericID.MatchString(app.InstallationID) {
+		return fmt.Errorf("%s.installation_id: must be a numeric installation ID", at)
+	}
+	return nil
+}
+
+// checkMirrorSync validates mirror.sync and mirror.auth values that are set.
+func checkMirror(at string, m MirrorSettings) error {
+	if m.Sync != "" && m.Sync != "auto" && m.Sync != "none" && !remote.MatchString(m.Sync) {
+		return fmt.Errorf("%s.sync: must be auto, none or a remote name", at)
+	}
+	if m.Auth != "" {
+		return enum(at+".auth", m.Auth, "none", "token")
+	}
+	return nil
+}
+
+func (s *Settings) normalize(base string, src Sources, l layout) error {
 	if s.Version != 1 {
 		return errors.New("version: must be 1")
 	}
@@ -262,8 +455,19 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 		if !repoName.MatchString(n) {
 			return fmt.Errorf("%s: invalid repository name (use lowercase letters, digits, - and _)", p)
 		}
+		origin, spell := l.origin[n], l.spell[n]
+		// sp names a key as the file spells it (deprecated or new).
+		sp := func(k string) string {
+			if old, ok := spell[k]; ok {
+				return old
+			}
+			return k
+		}
+		for k, o := range origin {
+			src[p+"."+k] = o
+		}
 		set := func(key, def string, v *string) {
-			src[p+"."+key] = "file"
+			src[p+"."+key] = cmp.Or(origin[key], "file")
 			if *v == "" {
 				*v, src[p+"."+key] = def, "default"
 			}
@@ -277,7 +481,7 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 		if e != nil {
 			return fmt.Errorf("%s.%w", p, e)
 		}
-		src[p+".provider"] = "file"
+		src[p+".provider"] = cmp.Or(origin["provider"], "file")
 		if r.Provider == "" {
 			r.Provider, src[p+".provider"] = ep.Provider, "default"
 		}
@@ -286,14 +490,38 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 			return fmt.Errorf("%s.url: same repository as %s", p, other)
 		}
 		seen[key] = p
-		if r.TokenEnv == "" {
-			return fmt.Errorf("%s.token_env: required", p)
+		if r.Auth == nil {
+			r.Auth = &AuthSettings{}
 		}
-		if !envName.MatchString(r.TokenEnv) {
-			return fmt.Errorf("%s.token_env: invalid environment variable name", p)
+		a := r.Auth
+		app := a.GitHubApp
+		switch {
+		case a.TokenEnv != "" && app != nil:
+			return fmt.Errorf("%s: set exactly one of %s and %s", p, sp("auth.token_env"), sp("auth.github_app"))
+		case a.TokenEnv == "" && app == nil:
+			return fmt.Errorf("%s.%s: required (or set %s)", p, sp("auth.token_env"), sp("auth.github_app"))
+		case app != nil:
+			ap := p + "." + sp("auth.github_app")
+			if r.Provider != "github" {
+				return fmt.Errorf("%s: only valid for GitHub repositories", ap)
+			}
+			if app.AppID == "" {
+				return fmt.Errorf("%s.app_id: required", ap)
+			}
+			if app.PrivateKeyEnv == "" {
+				return fmt.Errorf("%s.private_key_env: required", ap)
+			}
+			if e := checkApp(ap, app); e != nil {
+				return e
+			}
+		case !envName.MatchString(a.TokenEnv):
+			return fmt.Errorf("%s.%s: invalid environment variable name", p, sp("auth.token_env"))
 		}
-		if r.BotUserID != "" && !numericID.MatchString(r.BotUserID) {
-			return fmt.Errorf("%s.bot_user_id: must be a numeric user ID", p)
+		if a.BotUserID != "" && !numericID.MatchString(a.BotUserID) {
+			return fmt.Errorf("%s.%s: must be a numeric user ID", p, sp("auth.bot_user_id"))
+		}
+		if a.BotUsername != "" && !ValidBotUsername(a.BotUsername) {
+			return fmt.Errorf("%s.%s: invalid username", p, sp("auth.bot_username"))
 		}
 		if r.ForkSource != "" {
 			parts := strings.Split(r.ForkSource, "/")
@@ -305,12 +533,12 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 				return fmt.Errorf("%s.fork_source: must be a repository path such as group/project", p)
 			}
 		}
-		if r.Provider == "github" && r.TokenScheme != "" {
-			return fmt.Errorf("%s.token_scheme: only valid for GitLab repositories", p)
+		if r.Provider == "github" && a.TokenScheme != "" {
+			return fmt.Errorf("%s.%s: only valid for GitLab repositories", p, sp("auth.token_scheme"))
 		}
 		if r.Provider == "gitlab" {
-			set("token_scheme", "private-token", &r.TokenScheme)
-			if e := enum(p+".token_scheme", r.TokenScheme, "private-token", "bearer"); e != nil {
+			set("auth.token_scheme", "private-token", &a.TokenScheme)
+			if e := enum(p+"."+sp("auth.token_scheme"), a.TokenScheme, "private-token", "bearer"); e != nil {
 				return e
 			}
 		}
@@ -319,20 +547,36 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 		}
 		r.Mirror.Path = abs(base, r.Mirror.Path)
 		set("mirror.sync", "auto", &r.Mirror.Sync)
-		if r.Mirror.Sync != "auto" && r.Mirror.Sync != "none" && !remote.MatchString(r.Mirror.Sync) {
-			return fmt.Errorf("%s.mirror.sync: must be auto, none or a remote name", p)
+		mirrorAuth := "none"
+		if app != nil && r.Mirror.Sync == "auto" {
+			mirrorAuth = "token"
+		}
+		set("mirror.auth", mirrorAuth, &r.Mirror.Auth)
+		if e := checkMirror(p+".mirror", r.Mirror); e != nil {
+			return e
+		}
+		if r.Mirror.Auth == "token" && r.Mirror.Sync != "auto" {
+			return fmt.Errorf("%s.mirror.auth: token requires mirror.sync auto", p)
+		}
+		if r.Mirror.URL != "" {
+			if strings.HasPrefix(r.Mirror.URL, "-") {
+				return fmt.Errorf("%s.mirror.url: must be an absolute URL", p)
+			}
+			if _, e := validBase(r.Mirror.URL, true); e != nil {
+				return fmt.Errorf("%s.mirror.url: %w", p, e)
+			}
 		}
 		if r.Branch != "" && (!branch.MatchString(r.Branch) || strings.Contains(r.Branch, "..")) {
 			return fmt.Errorf("%s.branch: invalid branch name", p)
 		}
-		if r.Policy == "" {
+		if r.Policy == "" && r.InlinePolicy == nil {
 			return fmt.Errorf("%s.policy: required", p)
 		}
 		r.Policy = abs(base, r.Policy)
 		if r.Model != "" && r.Response != "" {
 			return fmt.Errorf("%s: set at most one of model and response", p)
 		}
-		src[p+".model"] = "file"
+		src[p+".model"] = cmp.Or(origin["model"], "file")
 		if r.Model == "" && r.Response == "" {
 			if _, ok := s.Models["default"]; ok {
 				r.Model, src[p+".model"] = "default", "default"
@@ -343,32 +587,30 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 		}
 		r.Response = abs(base, r.Response)
 		set("publish.approvals", "shadow", &r.Publish.Approvals)
-		if e := enum(p+".publish.approvals", r.Publish.Approvals, "off", "shadow", "submit"); e != nil {
-			return e
-		}
 		set("publish.comments", "shadow", &r.Publish.Comments)
-		if e := enum(p+".publish.comments", r.Publish.Comments, "off", "shadow", "post"); e != nil {
-			return e
-		}
 		set("publish.inline_comments", "shadow", &r.Publish.InlineComments)
-		if e := enum(p+".publish.inline_comments", r.Publish.InlineComments, "off", "shadow", "post"); e != nil {
-			return e
-		}
 		set("publish.suggestions", "include", &r.Publish.Suggestions)
-		if e := enum(p+".publish.suggestions", r.Publish.Suggestions, "off", "include"); e != nil {
-			return e
-		}
 		set("publish.inline_min_severity", "low", &r.Publish.InlineMinSeverity)
-		if e := enum(p+".publish.inline_min_severity", r.Publish.InlineMinSeverity, "info", "low", "medium", "high", "critical"); e != nil {
+		set("publish.protections", "required", &r.Publish.Protections)
+		if e := checkPublish(p+".publish", r.Publish); e != nil {
 			return e
 		}
 		if e := r.Review.Validate(p + ".review"); e != nil {
 			return e
 		}
-		set("publish.protections", "required", &r.Publish.Protections)
-		if e := enum(p+".publish.protections", r.Publish.Protections, "required", "advisory"); e != nil {
+		if r.Review == nil {
+			r.Review = &ReviewSettings{}
+		}
+		set("review.large_changes", "incomplete", &r.Review.LargeChanges)
+		if e := r.Triggers.Validate(p + "." + sp("triggers")); e != nil {
 			return e
 		}
+		if r.Triggers == nil {
+			r.Triggers = &AutoReviewSettings{}
+		}
+		set("triggers.drafts", "skip", &r.Triggers.Drafts)
+		auto := *r.Triggers
+		r.Review.Auto = &auto
 		if r.Provider == "github" && r.GitLab != nil {
 			return fmt.Errorf("%s.gitlab: only valid for GitLab repositories", p)
 		}
@@ -395,9 +637,42 @@ func (s *Settings) normalize(tree any, base string, src Sources) error {
 				return fmt.Errorf("%s.summary.limits: required", p)
 			}
 		}
+		// The deprecated fields and source keys mirror the effective values.
+		r.TokenEnv, r.TokenScheme, r.BotUserID, r.BotUsername = a.TokenEnv, a.TokenScheme, a.BotUserID, a.BotUsername
+		if app != nil {
+			if r.GitHub == nil {
+				r.GitHub = &GitHubSettings{}
+			}
+			r.GitHub.App = app
+		}
+		mirrorSources(src, p)
 		s.Repositories[n] = r
 	}
 	return nil
+}
+
+// legacySources maps new key prefixes to the deprecated spellings whose
+// source keys mirror them.
+var legacySources = []struct{ new, old string }{
+	{"auth.token_env", "token_env"}, {"auth.token_scheme", "token_scheme"}, {"auth.bot_user_id", "bot_user_id"},
+	{"auth.bot_username", "bot_username"}, {"auth.github_app.", "github.app."}, {"triggers.", "review.auto."},
+}
+
+func mirrorSources(src Sources, p string) {
+	var keys []string
+	for k := range src {
+		if strings.HasPrefix(k, p+".") {
+			keys = append(keys, k)
+		}
+	}
+	for _, k := range keys {
+		rest := strings.TrimPrefix(k, p+".")
+		for _, m := range legacySources {
+			if after, ok := strings.CutPrefix(rest, m.new); ok && (after == "" || strings.HasSuffix(m.new, ".")) {
+				src[p+"."+m.old+after] = src[k]
+			}
+		}
+	}
 }
 
 // Endpoint is derived from a repository URL; nothing here needs the network.
@@ -482,12 +757,17 @@ func (r RepositorySettings) Endpoint() (Endpoint, error) {
 // LockInputs are the settings a lock entry was resolved from; any change
 // makes the entry stale.
 type LockInputs struct {
-	URL        string `json:"url"`
-	Provider   string `json:"provider"`
-	APIURL     string `json:"api_url,omitempty"`
-	ForkSource string `json:"fork_source,omitempty"`
-	TokenEnv   string `json:"token_env"`
-	BotUserID  string `json:"bot_user_id,omitempty"`
+	URL         string `json:"url"`
+	Provider    string `json:"provider"`
+	APIURL      string `json:"api_url,omitempty"`
+	ForkSource  string `json:"fork_source,omitempty"`
+	TokenEnv    string `json:"token_env"`
+	BotUserID   string `json:"bot_user_id,omitempty"`
+	BotUsername string `json:"bot_username,omitempty"`
+	// GitHub App settings; empty for token repositories.
+	GitHubAppID             string `json:"github_app_id,omitempty"`
+	GitHubAppPrivateKeyEnv  string `json:"github_app_private_key_env,omitempty"`
+	GitHubAppInstallationID string `json:"github_app_installation_id,omitempty"`
 }
 
 type LockedRepository struct {
@@ -496,6 +776,10 @@ type LockedRepository struct {
 	SourceRepositoryID string     `json:"source_repository_id"`
 	DefaultBranch      string     `json:"default_branch"`
 	BotUserID          string     `json:"bot_user_id,omitempty"`
+	BotUsername        string     `json:"bot_username,omitempty"`
+	// InstallationID and AppSlug are resolved for GitHub App repositories.
+	InstallationID string `json:"installation_id,omitempty"`
+	AppSlug        string `json:"app_slug,omitempty"`
 }
 
 // Lock pins forge identities resolved by `reviewd config resolve`.
@@ -506,7 +790,11 @@ type Lock struct {
 
 func (s Settings) LockInputs(name string) LockInputs {
 	r := s.Repositories[name]
-	return LockInputs{URL: r.URL, Provider: r.Provider, APIURL: r.APIURL, ForkSource: r.ForkSource, TokenEnv: r.TokenEnv, BotUserID: r.BotUserID}
+	in := LockInputs{URL: r.URL, Provider: r.Provider, APIURL: r.APIURL, ForkSource: r.ForkSource, TokenEnv: r.TokenEnv, BotUserID: r.BotUserID, BotUsername: r.BotUsername}
+	if app := r.App(); app != nil {
+		in.GitHubAppID, in.GitHubAppPrivateKeyEnv, in.GitHubAppInstallationID = app.AppID, app.PrivateKeyEnv, app.InstallationID
+	}
+	return in
 }
 
 // Check reports the first repository whose lock entry is missing or stale.
@@ -532,7 +820,9 @@ func (l Lock) Check(s Settings) error {
 			}
 			return fmt.Errorf("repositories.%s: lock is stale (%s changed); run reviewd config resolve", n, strings.Join(changed, ", "))
 		}
-		if !numericID.MatchString(entry.RepositoryID) || !numericID.MatchString(entry.SourceRepositoryID) || entry.DefaultBranch == "" || (entry.BotUserID != "" && !numericID.MatchString(entry.BotUserID)) {
+		if !numericID.MatchString(entry.RepositoryID) || !numericID.MatchString(entry.SourceRepositoryID) || entry.DefaultBranch == "" || (entry.BotUserID != "" && !numericID.MatchString(entry.BotUserID)) ||
+			(entry.BotUsername != "" && !ValidBotUsername(entry.BotUsername)) ||
+			(s.Repositories[n].App() != nil && !numericID.MatchString(entry.InstallationID)) {
 			return fmt.Errorf("repositories.%s: invalid lock entry; run reviewd config resolve", n)
 		}
 	}
@@ -597,6 +887,19 @@ func checkTree(path string, t reflect.Type, v any) error {
 			return "config"
 		}
 		return path
+	}
+	if path == "defaults" {
+		t = repositoryType
+	}
+	if u := unionAt(path); u != nil {
+		switch v.(type) {
+		case string:
+			t = stringType
+		case map[string]any:
+			t = u
+		default:
+			return fmt.Errorf("%s: must be a path or a mapping", path)
+		}
 	}
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -664,7 +967,8 @@ func checkTree(path string, t reflect.Type, v any) error {
 		if !ok {
 			return fmt.Errorf("%s: must be text", at())
 		}
-		if s == "" {
+		// An empty api_key_prefix means no prefix (model configs).
+		if s == "" && path != "api_key_prefix" && !strings.HasSuffix(path, ".api_key_prefix") {
 			return fmt.Errorf("%s: empty value; omit the key to use the default", at())
 		}
 	case reflect.Int:

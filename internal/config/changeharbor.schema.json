@@ -52,10 +52,607 @@
     },
     "models": {
       "type": "object",
+      "description": "Named model configs: a file path (JSON, or YAML when it ends in .yaml or .yml) or an inline mapping, e.g. {\"default\": \"models/review.json\"}.",
       "additionalProperties": {
-        "type": "string"
-      },
-      "description": "Named model config files, e.g. {\"default\": \"models/review.json\"}."
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Model config file path."
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Inline model config.",
+            "properties": {
+              "api": {
+                "type": "string",
+                "description": "openai_chat (default) or anthropic_messages.",
+                "enum": [
+                  "openai_chat",
+                  "anthropic_messages"
+                ]
+              },
+              "endpoint": {
+                "type": "string",
+                "description": "API endpoint URL."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model name at the provider."
+              },
+              "api_key_env": {
+                "type": "string",
+                "description": "Environment variable holding the API key."
+              },
+              "api_key_header": {
+                "type": "string",
+                "description": "Header carrying the API key, when not the API's default."
+              },
+              "api_key_prefix": {
+                "type": "string",
+                "description": "Prefix before the key in the header; \"\" for none."
+              },
+              "capabilities": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "What the model supports.",
+                "properties": {
+                  "context_tokens": {
+                    "type": "integer",
+                    "description": "Context window in tokens."
+                  },
+                  "max_output_tokens": {
+                    "type": "integer",
+                    "description": "Most output tokens per request."
+                  },
+                  "input_tokens_per_byte": {
+                    "type": "integer",
+                    "description": "Conservative tokens per input byte."
+                  },
+                  "structured_output": {
+                    "type": "boolean",
+                    "description": "Whether the API enforces a JSON schema. Must be true."
+                  },
+                  "pricing_known": {
+                    "type": "boolean",
+                    "description": "Whether the prices below are known."
+                  },
+                  "input_price_micros_per_million": {
+                    "type": "integer",
+                    "description": "Input price in micro-units per million tokens."
+                  },
+                  "output_price_micros_per_million": {
+                    "type": "integer",
+                    "description": "Output price in micro-units per million tokens."
+                  }
+                }
+              },
+              "limits": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Request limits.",
+                "properties": {
+                  "max_request_bytes": {
+                    "type": "integer",
+                    "description": "Largest request body."
+                  },
+                  "max_response_bytes": {
+                    "type": "integer",
+                    "description": "Largest response body."
+                  },
+                  "max_output_tokens": {
+                    "type": "integer",
+                    "description": "Output tokens requested."
+                  },
+                  "max_attempts": {
+                    "type": "integer",
+                    "description": "Attempts per request (1 or 2)."
+                  },
+                  "timeout": {
+                    "type": [
+                      "string",
+                      "integer"
+                    ],
+                    "description": "Request timeout: a duration such as 3m, or integer nanoseconds."
+                  },
+                  "max_total_tokens": {
+                    "type": "integer",
+                    "description": "Token budget per review."
+                  },
+                  "max_cost_micros": {
+                    "type": "integer",
+                    "description": "Cost budget per review in micro-units; 0 means no known allowance."
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Values every repository inherits: the repository keys except those that identify one repository (url, provider, api_url, fork_source, branch, mirror.path, mirror.url, auth.bot_user_id, auth.bot_username, auth.github_app.installation_id). Mappings merge; a repository's scalars and lists replace inherited ones.",
+      "properties": {
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Credentials and bot identity every repository inherits. auth.github_app applies only to GitHub repositories and auth.token_scheme only to GitLab ones, so defaults may set both auth.token_env and auth.github_app: GitHub repositories use the App, GitLab repositories the token.",
+          "properties": {
+            "token_env": {
+              "type": "string",
+              "description": "Environment variable holding the forge token. A GitHub repository uses it only when no auth.github_app is set or inherited."
+            },
+            "token_scheme": {
+              "type": "string",
+              "enum": [
+                "private-token",
+                "bearer"
+              ],
+              "description": "GitLab only. How the token is sent. Default private-token."
+            },
+            "github_app": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Authenticate GitHub repositories as a GitHub App; GitLab repositories don't inherit it. A repository that sets auth.token_env drops it.",
+              "properties": {
+                "app_id": {
+                  "type": "string",
+                  "description": "Numeric GitHub App ID."
+                },
+                "private_key_env": {
+                  "type": "string",
+                  "description": "Environment variable holding the App's PEM private key."
+                }
+              }
+            }
+          }
+        },
+        "mirror": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Local git mirror reviewd reads source from.",
+          "properties": {
+            "sync": {
+              "type": "string",
+              "description": "auto (fetch from origin when configured), none, or a configured remote name. Default auto."
+            },
+            "auth": {
+              "type": "string",
+              "enum": [
+                "none",
+                "token"
+              ],
+              "description": "none (credentials come from the mirror's own git config) or token (pass the forge token to git through the environment; requires sync auto). Default token for a GitHub App with sync auto, else none."
+            }
+          }
+        },
+        "policy": {
+          "description": "Merge risk policy: a file path (JSON, or YAML when it ends in .yaml or .yml) or an inline mapping.",
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Policy file path."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Inline merge risk policy (the flat policy fields).",
+              "properties": {
+                "base_minimum": {
+                  "type": "integer",
+                  "description": "Lowest risk score any change gets (1-10)."
+                },
+                "auto_approve_max": {
+                  "type": "integer",
+                  "description": "Highest risk score that may be approved automatically (1-10)."
+                },
+                "required_checks": {
+                  "type": "array",
+                  "description": "Checks that must pass before approval.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "required_human_requirements": {
+                  "type": "array",
+                  "description": "Human sign-offs that must be present before approval.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "path_rules": {
+                  "type": "array",
+                  "description": "Risk floors for matching paths.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "A path rule.",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Rule ID."
+                      },
+                      "paths": {
+                        "type": "array",
+                        "description": "Globs.",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "minimum": {
+                        "type": "integer",
+                        "description": "Risk floor (1-10)."
+                      },
+                      "explanation": {
+                        "type": "string",
+                        "description": "Why the rule exists."
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "paths",
+                      "minimum"
+                    ]
+                  }
+                },
+                "size_rules": {
+                  "type": "array",
+                  "description": "Risk floors by change size.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "A size rule.",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Rule ID."
+                      },
+                      "metric": {
+                        "type": "string",
+                        "description": "Size metric."
+                      },
+                      "at_least": {
+                        "type": "integer",
+                        "description": "Applies at or above this size."
+                      },
+                      "minimum": {
+                        "type": "integer",
+                        "description": "Risk floor (1-10)."
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "metric",
+                      "at_least",
+                      "minimum"
+                    ]
+                  }
+                },
+                "unknown_size": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "What to do when the size of a change is unknown.",
+                  "properties": {
+                    "action": {
+                      "type": "string",
+                      "description": "minimum or human_required.",
+                      "enum": [
+                        "minimum",
+                        "human_required"
+                      ]
+                    },
+                    "minimum": {
+                      "type": "integer",
+                      "description": "Minimum risk score (1-10) for action minimum."
+                    }
+                  }
+                },
+                "familiarity_metric": {
+                  "type": "string",
+                  "description": "Developer familiarity metric: prior_authored_merged_integrations."
+                },
+                "lookback_days": {
+                  "type": "integer",
+                  "description": "Familiarity window in days."
+                },
+                "areas": {
+                  "type": "array",
+                  "description": "Areas for developer familiarity.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "An area.",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Area ID."
+                      },
+                      "paths": {
+                        "type": "array",
+                        "description": "Globs.",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "paths"
+                    ]
+                  }
+                },
+                "tiers": {
+                  "type": "array",
+                  "description": "Familiarity tiers.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "A tier.",
+                    "properties": {
+                      "at_most_prior_merges": {
+                        "type": "integer",
+                        "description": "Applies at or below this many prior merges."
+                      },
+                      "minimum": {
+                        "type": "integer",
+                        "description": "Risk floor (1-10)."
+                      }
+                    },
+                    "required": [
+                      "at_most_prior_merges",
+                      "minimum"
+                    ]
+                  }
+                },
+                "unknown_familiarity": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "What to do when familiarity is unknown.",
+                  "properties": {
+                    "action": {
+                      "type": "string",
+                      "description": "minimum or human_required.",
+                      "enum": [
+                        "minimum",
+                        "human_required"
+                      ]
+                    },
+                    "minimum": {
+                      "type": "integer",
+                      "description": "Minimum risk score (1-10) for action minimum."
+                    }
+                  }
+                },
+                "otherwise_minimum": {
+                  "type": "integer",
+                  "description": "Risk floor when no tier applies."
+                }
+              }
+            }
+          ]
+        },
+        "model": {
+          "type": "string",
+          "description": "Name of a model in models. Default: default, when defined."
+        },
+        "response": {
+          "type": "string",
+          "description": "Offline model response fixture (testing). Mutually exclusive with model."
+        },
+        "publish": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "What reviewd may write to the forge.",
+          "properties": {
+            "approvals": {
+              "type": "string",
+              "description": "off, shadow (evaluate everything, write nothing) or submit. Default shadow.",
+              "enum": [
+                "off",
+                "shadow",
+                "submit"
+              ]
+            },
+            "comments": {
+              "type": "string",
+              "description": "off, shadow (render only) or post. Default shadow.",
+              "enum": [
+                "off",
+                "shadow",
+                "post"
+              ]
+            },
+            "protections": {
+              "type": "string",
+              "enum": [
+                "required",
+                "advisory"
+              ],
+              "description": "required (default): approve only when the forge's own protections are in place. advisory: approve regardless of protection settings; doctor reports gaps as warnings. Must be set explicitly."
+            },
+            "inline_comments": {
+              "type": "string",
+              "enum": [
+                "off",
+                "shadow",
+                "post"
+              ],
+              "description": "off, shadow (plan only, no remote calls) or post (one comment per anchored finding on its changed line; findings no longer reported are marked possibly outdated). Default shadow."
+            },
+            "suggestions": {
+              "type": "string",
+              "enum": [
+                "off",
+                "include"
+              ],
+              "description": "include (default): add a committable suggestion block to inline comments when the model proposes a replacement for changed lines. off: never include one."
+            },
+            "inline_min_severity": {
+              "type": "string",
+              "enum": [
+                "info",
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ],
+              "description": "Lowest finding severity posted as an inline comment. Default low: info findings stay in the summary only."
+            }
+          }
+        },
+        "gitlab": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "GitLab-only settings.",
+          "properties": {
+            "ci_trust": {
+              "type": "string",
+              "description": "How the head pipeline's definition is trusted. Default external_config.",
+              "enum": [
+                "external_config",
+                "unchanged_config",
+                "none"
+              ]
+            },
+            "ci_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "With unchanged_config: globs of files that define job behaviour."
+            },
+            "required_jobs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Job names that must succeed. Default: the policy's required_checks."
+            }
+          }
+        },
+        "github": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "GitHub-only settings.",
+          "properties": {
+            "required_checks": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Check name to trusted GitHub App ID."
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Background summary generation.",
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "Name of a model in models."
+            },
+            "limits": {
+              "type": "object",
+              "description": "Summary limits (see contextbuild.SummaryLimits)."
+            }
+          }
+        },
+        "review": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Trusted review guidance and path filters. Comes only from this file, never from the repository under review. Changing it invalidates existing reviews.",
+          "properties": {
+            "instructions": {
+              "type": "string",
+              "description": "Repository-wide review instructions added to every review prompt."
+            },
+            "path_instructions": {
+              "type": "array",
+              "description": "Instructions added only when a changed file (old or new path) matches one of the globs.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "paths",
+                  "instructions"
+                ],
+                "properties": {
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Globs: * within a segment, ? one character, ** whole segments."
+                  },
+                  "instructions": {
+                    "type": "string",
+                    "description": "Instructions for matching files."
+                  }
+                }
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Globs of files left out of the model's input (generated, vendored, lockfiles). Risk-policy minimums still count them."
+            },
+            "large_changes": {
+              "type": "string",
+              "enum": [
+                "incomplete",
+                "partial"
+              ],
+              "default": "incomplete",
+              "description": "What to do when the diff doesn't fit the model's request budget: incomplete posts a status comment and reviews nothing; partial reviews the whole files that fit and lists the rest. Partial reviews are never approved. Changing it invalidates existing reviews."
+            }
+          }
+        },
+        "triggers": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Which changes the service reviews automatically. Does not affect `reviewd review --url` or the review comment command, and does not invalidate reviews.",
+          "properties": {
+            "drafts": {
+              "type": "string",
+              "enum": [
+                "skip",
+                "review"
+              ],
+              "default": "skip",
+              "description": "Whether draft pull or merge requests are reviewed automatically."
+            },
+            "ignore_authors": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9*][A-Za-z0-9_.*\\[\\]-]*$",
+                "maxLength": 255
+              },
+              "description": "Author logins or usernames not reviewed automatically. * matches any run of characters; matching ignores case."
+            },
+            "skip_labels": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Label names (case-insensitive) that skip automatic review."
+            },
+            "skip_title_keywords": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Case-insensitive title substrings that skip automatic review."
+            }
+          }
+        }
+      }
     },
     "repositories": {
       "type": "object",
@@ -64,9 +661,7 @@
         "additionalProperties": false,
         "required": [
           "url",
-          "token_env",
-          "mirror",
-          "policy"
+          "mirror"
         ],
         "description": "A repository reviewd serves, keyed by a short lowercase name.",
         "properties": {
@@ -86,21 +681,79 @@
             "type": "string",
             "description": "API base override, e.g. for a GitLab installed under a path prefix."
           },
+          "auth": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Credentials and bot identity. Set exactly one of auth.token_env and auth.github_app.",
+            "properties": {
+              "token_env": {
+                "type": "string",
+                "description": "Environment variable holding the forge token. Set exactly one of auth.token_env and auth.github_app."
+              },
+              "token_scheme": {
+                "type": "string",
+                "enum": [
+                  "private-token",
+                  "bearer"
+                ],
+                "description": "GitLab only. How the token is sent. Default private-token."
+              },
+              "github_app": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Authenticate as a GitHub App. Set exactly one of auth.token_env and auth.github_app. GitHub repositories only. app_id and private_key_env are required, here or inherited from defaults.",
+                "properties": {
+                  "app_id": {
+                    "type": "string",
+                    "description": "Numeric GitHub App ID."
+                  },
+                  "private_key_env": {
+                    "type": "string",
+                    "description": "Environment variable holding the App's PEM private key."
+                  },
+                  "installation_id": {
+                    "type": "string",
+                    "description": "Numeric installation ID. Default: resolved by reviewd config resolve."
+                  }
+                }
+              },
+              "bot_user_id": {
+                "type": "string",
+                "description": "Numeric user ID the token acts as. Resolved from /user when omitted; for a GitHub App, resolved as the App bot user."
+              },
+              "bot_username": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*(\\[bot\\])?$",
+                "maxLength": 255,
+                "description": "Username the token acts as, used for the `@username review` comment command and the retry hint in status comments. Resolved from /user when omitted; set it for GitHub App tokens (app-slug[bot])."
+              }
+            }
+          },
           "token_env": {
             "type": "string",
-            "description": "Environment variable holding the forge token."
+            "description": "Deprecated: use auth.token_env. Environment variable holding the forge token. Set exactly one of token_env and github.app.",
+            "deprecated": true
           },
           "token_scheme": {
             "type": "string",
-            "description": "GitLab only. How the token is sent. Default private-token.",
+            "description": "Deprecated: use auth.token_scheme. GitLab only. How the token is sent. Default private-token.",
             "enum": [
               "private-token",
               "bearer"
-            ]
+            ],
+            "deprecated": true
           },
           "bot_user_id": {
             "type": "string",
-            "description": "Numeric user ID the token acts as. Resolved from /user when omitted; set it for GitHub App tokens."
+            "description": "Deprecated: use auth.bot_user_id. Numeric user ID the token acts as. Resolved from /user when omitted; for a GitHub App, resolved as the App bot user.",
+            "deprecated": true
+          },
+          "bot_username": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*(\\[bot\\])?$",
+            "maxLength": 255,
+            "description": "Deprecated: use auth.bot_username. Username the token acts as, used for the `@username review` comment command and the retry hint in status comments. Resolved from /user when omitted; set it for GitHub App tokens (app-slug[bot]).",
+            "deprecated": true
           },
           "fork_source": {
             "type": "string",
@@ -121,6 +774,18 @@
               "sync": {
                 "type": "string",
                 "description": "auto (fetch from origin when configured), none, or a configured remote name. Default auto."
+              },
+              "auth": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "token"
+                ],
+                "description": "none (credentials come from the mirror's own git config) or token (pass the forge token to git through the environment; requires sync auto). Default token for a GitHub App with sync auto, else none."
+              },
+              "url": {
+                "type": "string",
+                "description": "Clone and fetch URL: https (loopback http allowed), no credentials, query or fragment. Default the repository URL plus .git."
               }
             }
           },
@@ -129,8 +794,209 @@
             "description": "Target branch. Default: the repository's default branch, pinned in the lock."
           },
           "policy": {
-            "type": "string",
-            "description": "Merge risk policy file."
+            "description": "Merge risk policy: a file path (JSON, or YAML when it ends in .yaml or .yml) or an inline mapping. Required, here or in defaults.",
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Policy file path."
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Inline merge risk policy (the flat policy fields).",
+                "properties": {
+                  "base_minimum": {
+                    "type": "integer",
+                    "description": "Lowest risk score any change gets (1-10)."
+                  },
+                  "auto_approve_max": {
+                    "type": "integer",
+                    "description": "Highest risk score that may be approved automatically (1-10)."
+                  },
+                  "required_checks": {
+                    "type": "array",
+                    "description": "Checks that must pass before approval.",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "required_human_requirements": {
+                    "type": "array",
+                    "description": "Human sign-offs that must be present before approval.",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "path_rules": {
+                    "type": "array",
+                    "description": "Risk floors for matching paths.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "A path rule.",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Rule ID."
+                        },
+                        "paths": {
+                          "type": "array",
+                          "description": "Globs.",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "minimum": {
+                          "type": "integer",
+                          "description": "Risk floor (1-10)."
+                        },
+                        "explanation": {
+                          "type": "string",
+                          "description": "Why the rule exists."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "paths",
+                        "minimum"
+                      ]
+                    }
+                  },
+                  "size_rules": {
+                    "type": "array",
+                    "description": "Risk floors by change size.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "A size rule.",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Rule ID."
+                        },
+                        "metric": {
+                          "type": "string",
+                          "description": "Size metric."
+                        },
+                        "at_least": {
+                          "type": "integer",
+                          "description": "Applies at or above this size."
+                        },
+                        "minimum": {
+                          "type": "integer",
+                          "description": "Risk floor (1-10)."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "metric",
+                        "at_least",
+                        "minimum"
+                      ]
+                    }
+                  },
+                  "unknown_size": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "What to do when the size of a change is unknown.",
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "description": "minimum or human_required.",
+                        "enum": [
+                          "minimum",
+                          "human_required"
+                        ]
+                      },
+                      "minimum": {
+                        "type": "integer",
+                        "description": "Minimum risk score (1-10) for action minimum."
+                      }
+                    }
+                  },
+                  "familiarity_metric": {
+                    "type": "string",
+                    "description": "Developer familiarity metric: prior_authored_merged_integrations."
+                  },
+                  "lookback_days": {
+                    "type": "integer",
+                    "description": "Familiarity window in days."
+                  },
+                  "areas": {
+                    "type": "array",
+                    "description": "Areas for developer familiarity.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "An area.",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Area ID."
+                        },
+                        "paths": {
+                          "type": "array",
+                          "description": "Globs.",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "paths"
+                      ]
+                    }
+                  },
+                  "tiers": {
+                    "type": "array",
+                    "description": "Familiarity tiers.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "A tier.",
+                      "properties": {
+                        "at_most_prior_merges": {
+                          "type": "integer",
+                          "description": "Applies at or below this many prior merges."
+                        },
+                        "minimum": {
+                          "type": "integer",
+                          "description": "Risk floor (1-10)."
+                        }
+                      },
+                      "required": [
+                        "at_most_prior_merges",
+                        "minimum"
+                      ]
+                    }
+                  },
+                  "unknown_familiarity": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "What to do when familiarity is unknown.",
+                    "properties": {
+                      "action": {
+                        "type": "string",
+                        "description": "minimum or human_required.",
+                        "enum": [
+                          "minimum",
+                          "human_required"
+                        ]
+                      },
+                      "minimum": {
+                        "type": "integer",
+                        "description": "Minimum risk score (1-10) for action minimum."
+                      }
+                    }
+                  },
+                  "otherwise_minimum": {
+                    "type": "integer",
+                    "description": "Risk floor when no tier applies."
+                  }
+                }
+              }
+            ]
           },
           "model": {
             "type": "string",
@@ -242,17 +1108,33 @@
                   "type": "string"
                 },
                 "description": "Check name to trusted GitHub App ID."
+              },
+              "app": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Deprecated: use auth.github_app. Authenticate as a GitHub App instead of token_env.",
+                "properties": {
+                  "app_id": {
+                    "type": "string",
+                    "description": "Numeric GitHub App ID."
+                  },
+                  "private_key_env": {
+                    "type": "string",
+                    "description": "Environment variable holding the App's PEM private key."
+                  },
+                  "installation_id": {
+                    "type": "string",
+                    "description": "Numeric installation ID. Default: resolved by reviewd config resolve."
+                  }
+                },
+                "deprecated": true
               }
             }
           },
           "summary": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "model",
-              "limits"
-            ],
-            "description": "Background summary generation.",
+            "description": "Background summary generation. model and limits are required, here or inherited from defaults.",
             "properties": {
               "model": {
                 "type": "string",
@@ -304,6 +1186,94 @@
                   "type": "string"
                 },
                 "description": "Globs of files left out of the model's input (generated, vendored, lockfiles). Risk-policy minimums still count them."
+              },
+              "large_changes": {
+                "type": "string",
+                "enum": [
+                  "incomplete",
+                  "partial"
+                ],
+                "default": "incomplete",
+                "description": "What to do when the diff doesn't fit the model's request budget: incomplete posts a status comment and reviews nothing; partial reviews the whole files that fit and lists the rest. Partial reviews are never approved. Changing it invalidates existing reviews."
+              },
+              "auto": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Deprecated: use triggers. Which changes the service reviews automatically. Does not affect `reviewd review --url` or the review comment command, and does not invalidate reviews.",
+                "properties": {
+                  "drafts": {
+                    "type": "string",
+                    "enum": [
+                      "skip",
+                      "review"
+                    ],
+                    "default": "skip",
+                    "description": "Whether draft pull or merge requests are reviewed automatically."
+                  },
+                  "ignore_authors": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9*][A-Za-z0-9_.*\\[\\]-]*$",
+                      "maxLength": 255
+                    },
+                    "description": "Author logins or usernames not reviewed automatically. * matches any run of characters; matching ignores case."
+                  },
+                  "skip_labels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Label names (case-insensitive) that skip automatic review."
+                  },
+                  "skip_title_keywords": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Case-insensitive title substrings that skip automatic review."
+                  }
+                },
+                "deprecated": true
+              }
+            }
+          },
+          "triggers": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Which changes the service reviews automatically. Does not affect `reviewd review --url` or the review comment command, and does not invalidate reviews.",
+            "properties": {
+              "drafts": {
+                "type": "string",
+                "enum": [
+                  "skip",
+                  "review"
+                ],
+                "default": "skip",
+                "description": "Whether draft pull or merge requests are reviewed automatically."
+              },
+              "ignore_authors": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9*][A-Za-z0-9_.*\\[\\]-]*$",
+                  "maxLength": 255
+                },
+                "description": "Author logins or usernames not reviewed automatically. * matches any run of characters; matching ignores case."
+              },
+              "skip_labels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Label names (case-insensitive) that skip automatic review."
+              },
+              "skip_title_keywords": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Case-insensitive title substrings that skip automatic review."
               }
             }
           }

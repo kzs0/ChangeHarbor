@@ -72,11 +72,15 @@ func rebuildRepositories(ctx context.Context, c serverConfig, now time.Time) err
 					if e != nil {
 						return e
 					}
-					if repo.SummaryModelConfig != "" {
+					if repo.hasSummaryModel() {
 						if repo.SummaryLimits == nil {
 							return errors.New("separate summary limits required")
 						}
-						m, close, e := modelFor(ctx, repo.SummaryModelConfig, "", c.State, "summary:"+snap.ID)
+						mc, e := loadModelConfig(repo.SummaryModelConfig, repo.inlineSummaryModel)
+						if e != nil {
+							return e
+						}
+						m, close, e := modelForConfig(ctx, mc, "", c.State, "summary:"+snap.ID)
 						if e != nil {
 							return e
 						}
@@ -115,5 +119,14 @@ func backgroundSummaryDigest(h *model.HTTP, limits contextbuild.SummaryLimits) s
 		Capabilities             model.Capabilities
 		Transport                model.HTTPLimits
 		Summary                  contextbuild.SummaryLimits
-	}{"reviewd-background-v2", h.Endpoint, h.Model, h.Capabilities, h.Limits, limits})
+	}{backgroundVersion(h), h.Endpoint, h.Model, h.Capabilities, h.Limits, limits})
+}
+
+// backgroundVersion names the summary cache format; the model API joins it
+// only when it is not the default, so existing digests are unchanged.
+func backgroundVersion(h *model.HTTP) string {
+	if h.API != "" && h.API != model.APIOpenAIChat {
+		return "reviewd-background-v2/" + h.API
+	}
+	return "reviewd-background-v2"
 }

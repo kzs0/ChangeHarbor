@@ -1,0 +1,35 @@
+# Example deployment: reviewd behind Caddy for TLS.
+#
+# reviewd listens only on loopback (service.address: 127.0.0.1:8080), so
+# Caddy shares its network namespace and proxies to it. Secrets come from the
+# environment (an env_file or ${VAR} substitution), never from this file.
+#
+# In changeharbor.yaml, set state: /data/state and mirror paths under
+# /mirrors.
+services:
+  reviewd:
+    image: ghcr.io/kzs0/reviewd:0.1.0
+    command: ["serve", "--config", "/config/changeharbor.yaml"]
+    restart: unless-stopped
+    env_file: reviewd.env # GITHUB_WEBHOOK_SECRET, CHANGEHARBOR_APP_KEY, model API keys, ...
+    volumes:
+      - ./config:/config:ro
+      - state:/data
+      - mirrors:/mirrors
+    ports:
+      - "80:80"
+      - "443:443"
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    network_mode: service:reviewd
+    depends_on: [reviewd]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  state:
+  mirrors:
+  caddy-data:
+  caddy-config:

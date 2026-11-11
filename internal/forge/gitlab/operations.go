@@ -544,3 +544,72 @@ func (c *Client) CreateDiscussion(ctx context.Context, id string, number int, bo
 	}
 	return x.Notes[0].comment()
 }
+
+// Note is the API's copy of a merge request note. Body is untrusted.
+type Note struct {
+	ID, Body, AuthorID, AuthorUsername string
+	System                             bool
+}
+
+// Note reads one merge request note by ID.
+func (c *Client) Note(ctx context.Context, projectID string, iid int, noteID string) (Note, error) {
+	if !numeric.MatchString(projectID) || iid <= 0 || !numeric.MatchString(noteID) {
+		return Note{}, errors.New("invalid note request")
+	}
+	var x struct {
+		ID     int64  `json:"id"`
+		Body   string `json:"body"`
+		System bool   `json:"system"`
+		Author struct {
+			ID       int64  `json:"id"`
+			Username string `json:"username"`
+		} `json:"author"`
+	}
+	if e := c.request(ctx, "GET", fmt.Sprintf("/projects/%s/merge_requests/%d/notes/%s", projectID, iid, noteID), nil, &x); e != nil {
+		return Note{}, e
+	}
+	if fmt.Sprint(x.ID) != noteID || x.Author.ID <= 0 {
+		return Note{}, errors.New("invalid note identity")
+	}
+	return Note{ID: noteID, Body: x.Body, AuthorID: fmt.Sprint(x.Author.ID), AuthorUsername: x.Author.Username, System: x.System}, nil
+}
+
+// AccessLevel returns a user's effective access level on a project,
+// including inherited membership. A non-member (404) has level 0.
+func (c *Client) AccessLevel(ctx context.Context, projectID, userID string) (int, error) {
+	if !numeric.MatchString(projectID) || !numeric.MatchString(userID) {
+		return 0, errors.New("invalid membership request")
+	}
+	var x struct {
+		ID          int64 `json:"id"`
+		AccessLevel int   `json:"access_level"`
+	}
+	if e := c.request(ctx, "GET", fmt.Sprintf("/projects/%s/members/all/%s", projectID, userID), nil, &x); e != nil {
+		if statusCode(e) == 404 {
+			return 0, nil
+		}
+		return 0, e
+	}
+	if fmt.Sprint(x.ID) != userID || x.AccessLevel < 0 {
+		return 0, errors.New("invalid membership response")
+	}
+	return x.AccessLevel, nil
+}
+
+// User is the credential's user.
+type User struct{ ID, Username string }
+
+// Me returns the credential user's ID and username.
+func (c *Client) Me(ctx context.Context) (User, error) {
+	var x struct {
+		ID       int64  `json:"id"`
+		Username string `json:"username"`
+	}
+	if e := c.request(ctx, "GET", "/user", nil, &x); e != nil {
+		return User{}, e
+	}
+	if x.ID <= 0 || x.Username == "" {
+		return User{}, errors.New("missing GitLab user identity")
+	}
+	return User{ID: fmt.Sprint(x.ID), Username: x.Username}, nil
+}

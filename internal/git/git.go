@@ -42,6 +42,40 @@ func (b *bounded) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 func (r Reader) run(ctx context.Context, args ...string) ([]byte, error) {
+	return r.runEnv(ctx, nil, args...)
+}
+
+// commandHook, when set (tests only), sees every git command before it runs.
+var commandHook func(*exec.Cmd)
+
+// SafeEnviron returns environ without entries that would inject git
+// configuration or templates from outside the trusted call site, or turn on
+// git's trace and debug output (which can write the Authorization header or
+// other request data to stderr or files) or disable TLS verification. Keys
+// compare exactly and case-sensitively; order is kept; entries without "="
+// are kept.
+func SafeEnviron(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		k, _, ok := strings.Cut(kv, "=")
+		if ok && unsafeGitKey(k) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+func unsafeGitKey(k string) bool {
+	switch k {
+	case "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_TEMPLATE_DIR", "GIT_CURL_VERBOSE", "GIT_REDACT_COOKIES", "GIT_SSL_NO_VERIFY":
+		return true
+	}
+	return strings.HasPrefix(k, "GIT_CONFIG_KEY_") || strings.HasPrefix(k, "GIT_CONFIG_VALUE_") || strings.HasPrefix(k, "GIT_TRACE")
+}
+
+// runEnv is run with extra environment entries (GIT_CONFIG_* from HTTPAuth).
+func (r Reader) runEnv(ctx context.Context, extra []string, args ...string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -52,11 +86,14 @@ func (r Reader) run(ctx context.Context, args ...string) ([]byte, error) {
 	base := []string{"--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.fsmonitor=false", "-c", "core.pager=cat"}
 	c := exec.CommandContext(ctx, "git", append(base, args...)...)
 	c.Dir = r.Repo
-	c.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
+	c.Env = append(append(SafeEnviron(os.Environ()), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"), extra...)
 	out := &bounded{limit: limit}
 	stderr := &bounded{limit: 4096}
 	c.Stdout = out
 	c.Stderr = stderr
+	if commandHook != nil {
+		commandHook(c)
+	}
 	if err := c.Run(); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -215,13 +252,11 @@ var (
 // refspecs must be explicit refs/ mappings. Hooks are disabled, tags are not
 // fetched and credentials come only from the repository's own configuration.
 func (r Reader) Fetch(ctx context.Context, remote string, refspecs ...string) error {
-	if !remoteName.MatchString(remote) || len(refspecs) == 0 {
+	if !remoteName.MatchString(remote) {
 		return fmt.Errorf("unsafe fetch request")
 	}
-	for _, s := range refspecs {
-		if !refspec.MatchString(s) || strings.Contains(s, "..") || strings.Contains(s, "//") {
-			return fmt.Errorf("unsafe refspec")
-		}
+	if e := validRefspecs(refspecs); e != nil {
+		return e
 	}
 	if _, e := r.run(ctx, "config", "--local", "--get", "remote."+remote+".url"); e != nil {
 		return fmt.Errorf("remote %q is not configured in the mirror", remote)

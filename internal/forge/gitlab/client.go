@@ -63,6 +63,10 @@ type Change struct {
 	StartOID       string
 	Draft          bool
 	HeadPipelineID int64
+	// Title, Author and Labels are untrusted facts automatic review
+	// triggers compare; they are never rendered.
+	Title, Author string
+	Labels        []string
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body io.Reader, out any) error {
@@ -134,7 +138,12 @@ func (c *Client) Change(ctx context.Context, id string, number int) (Change, err
 		State           string `json:"state"`
 		Draft           bool   `json:"draft"`
 		WIP             bool   `json:"work_in_progress"`
-		HeadPipeline    *struct {
+		Title           string `json:"title"`
+		Author          struct {
+			Username string `json:"username"`
+		} `json:"author"`
+		Labels       []string `json:"labels"`
+		HeadPipeline *struct {
 			ID int64 `json:"id"`
 		} `json:"head_pipeline"`
 		DiffRefs struct {
@@ -172,7 +181,8 @@ func (c *Client) Change(ctx context.Context, id string, number int) (Change, err
 		return Change{}, errors.New("unverified target branch revision")
 	}
 	out := Change{RepositoryID: fmt.Sprint(x.TargetProjectID), SourceRepositoryID: fmt.Sprint(x.SourceProjectID), HeadOID: x.SHA, TargetOID: branch.Commit.ID, MergeBaseOID: x.DiffRefs.BaseSHA, StartOID: x.DiffRefs.StartSHA,
-		TargetBranch: wire.TargetBranch, State: wire.State, Draft: wire.Draft || wire.WIP}
+		TargetBranch: wire.TargetBranch, State: wire.State, Draft: wire.Draft || wire.WIP,
+		Title: wire.Title, Author: wire.Author.Username, Labels: wire.Labels}
 	if wire.HeadPipeline != nil {
 		if wire.HeadPipeline.ID <= 0 {
 			return Change{}, errors.New("invalid head pipeline identity")

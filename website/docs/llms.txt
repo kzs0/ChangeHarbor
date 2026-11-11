@@ -1,0 +1,40 @@
+# ChangeHarbor
+
+> Self-hosted code review for GitHub pull requests and GitLab merge requests. One model call per review, a summary with a per-file walkthrough, inline comments with suggestions, and approvals bound to the reviewed commit that are given only when a risk policy and the forge's own protections allow it. The binary is `reviewd`; configuration lives in `changeharbor.yaml`.
+
+Every write is off by default (`shadow`). Config examples on these pages are validated by the project's test suite.
+
+## Getting started
+
+- [Home](https://kzs0.github.io/ChangeHarbor/): what ChangeHarbor does and never does
+- [How it works](https://kzs0.github.io/ChangeHarbor/getting-started/how-it-works/): forge, mirror, review, risk policy, publication, modes
+- [What a review looks like](https://kzs0.github.io/ChangeHarbor/getting-started/what-a-review-looks-like/): summary, inline, suggestion, partial and status comments as posted
+- [Install](https://kzs0.github.io/ChangeHarbor/getting-started/install/): build from source or pull the image
+- [Quickstart](https://kzs0.github.io/ChangeHarbor/getting-started/quickstart/): review one merge request in shadow mode
+
+## Set up
+
+- [Coming from CodeRabbit](https://kzs0.github.io/ChangeHarbor/guides/coming-from-coderabbit/): feature mapping, .coderabbit.yaml translation, what's missing
+- [GitHub](https://kzs0.github.io/ChangeHarbor/guides/github/): GitHub App or machine user, permissions, webhook events, branch protection
+- [GitLab](https://kzs0.github.io/ChangeHarbor/guides/gitlab/): project access token, trusted CI, merge request settings, webhooks
+- [Run the service](https://kzs0.github.io/ChangeHarbor/guides/service/): reviewd serve, events, triggers, the review command, systemd
+- [Run in a container](https://kzs0.github.io/ChangeHarbor/guides/container/): the published image with Docker Compose and Caddy
+- [Rollout checklist](https://kzs0.github.io/ChangeHarbor/guides/rollout/): shadow, then comments, inline comments and approvals
+
+## Configuration
+
+- [changeharbor.yaml reference](https://kzs0.github.io/ChangeHarbor/configuration/reference/): every key, its default and what invalidates reviews
+- [Risk policy](https://kzs0.github.io/ChangeHarbor/configuration/policy/): minimum risk by path, size and familiarity
+- [Models](https://kzs0.github.io/ChangeHarbor/configuration/models/): the model config file
+- [Model providers](https://kzs0.github.io/ChangeHarbor/configuration/providers/): OpenAI, Azure OpenAI, Anthropic, OpenRouter, LiteLLM, vLLM, Ollama; prompt budget and cost
+
+## Operations
+
+- [Operating ChangeHarbor](https://kzs0.github.io/ChangeHarbor/operations/operating/): health, logs, several repositories, upgrades, backups
+- [Troubleshooting](https://kzs0.github.io/ChangeHarbor/operations/troubleshooting/): every withholding reason and its fix
+- [Security model](https://kzs0.github.io/ChangeHarbor/operations/security/): trust boundaries and what is enforced
+
+## Reference
+
+- [CLI](https://kzs0.github.io/ChangeHarbor/reference/cli/): every command and exit code
+- [Migrating from JSON configs](https://kzs0.github.io/ChangeHarbor/reference/migrating/): converting legacy forge files

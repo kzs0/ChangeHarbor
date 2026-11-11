@@ -46,7 +46,9 @@ func (q *Queue) ReceiveAndEnqueue(ctx context.Context, delivery string, payload 
 				return false, e
 			}
 			if providerTime < newestTime {
-				state = "superseded"
+				if !j.Force {
+					state = "superseded"
+				}
 			} else {
 				if local == int(^uint(0)>>1) {
 					return false, errors.New("generation overflow")
@@ -58,12 +60,12 @@ func (q *Queue) ReceiveAndEnqueue(ctx context.Context, delivery string, payload 
 				if _, e = tx.ExecContext(ctx, "INSERT INTO queue_generations(change_id,provider_time,local_generation) VALUES(?,?,?) ON CONFLICT(change_id) DO UPDATE SET provider_time=excluded.provider_time,local_generation=excluded.local_generation", j.ChangeID, providerTime, j.Generation); e != nil {
 					return false, e
 				}
-				if _, e = tx.ExecContext(ctx, "UPDATE queue_jobs SET state='superseded' WHERE change_id=? AND kind='review' AND state IN ('pending','running')", j.ChangeID); e != nil {
+				if _, e = tx.ExecContext(ctx, "UPDATE queue_jobs SET state='superseded' WHERE change_id=? AND kind='review' AND state IN ('pending','running') AND force=0", j.ChangeID); e != nil {
 					return false, e
 				}
 			}
 		}
-		if _, e = tx.ExecContext(ctx, "INSERT INTO queue_jobs(id,idem_key,change_id,kind,generation,state) VALUES(?,?,?,?,?,?)", j.ID, j.Key, j.ChangeID, j.Kind, j.Generation, state); e != nil {
+		if _, e = tx.ExecContext(ctx, "INSERT INTO queue_jobs(id,idem_key,change_id,kind,generation,state,force) VALUES(?,?,?,?,?,?,?)", j.ID, j.Key, j.ChangeID, j.Kind, j.Generation, state, j.Force); e != nil {
 			return false, e
 		}
 	}

@@ -46,7 +46,10 @@ fixture mismatch, 4 incomplete scope/assessment.
 ## Live model and forge review
 
 Replace `--response` with `--model-config /trusted/model.json`. The HTTP adapter
-speaks OpenAI-compatible structured chat completions. Configure explicit model
+speaks OpenAI-compatible structured chat completions (`api: openai_chat`, the
+default) or the Anthropic Messages API (`api: anthropic_messages`); provider
+recipes are at https://kzs0.github.io/ChangeHarbor/configuration/providers/.
+Configure explicit model
 capabilities, token/byte/cost/deadline caps and a credential environment-variable
 name. Request intent, attempts, exact responses and usage are retained locally;
 uncertain completion is never silently replayed. Unknown usage/price remains
@@ -76,7 +79,8 @@ models:
 repositories:
   app:
     url: https://gitlab.com/group/app
-    token_env: GITLAB_TOKEN
+    auth:
+      token_env: GITLAB_TOKEN
     mirror:
       path: /mirrors/app.git
     policy: policies/app.json
@@ -99,8 +103,14 @@ repositories:
   `$CHANGEHARBOR_CONFIG`, then `./changeharbor.yaml` locates it; `--state`, then
   `$CHANGEHARBOR_STATE`, then the file sets the state directory. Nothing else is
   read from the environment except named secrets.
+- A top-level `defaults` block holds values every repository inherits;
+  `policy` and `models` entries can be files (JSON or YAML) or inline.
 - Only review identity (url, provider, api_url, fork_source, mirror path,
-  policy, branch) invalidates existing reviews; `config check` lists it.
+  policy, branch, `review`) invalidates existing reviews; `config check`
+  lists it.
+- Older spellings (`token_env` at the repository level, `github.app`,
+  `review.auto`) still work with a warning; `reviewd config migrate --layout
+  --write` moves them to `auth` and `triggers`, keeping comments.
 - `reviewd config schema` prints the JSON Schema; `config init` writes it next
   to the config for editor completion.
 - Legacy `--forge-config` files still work for one release with a warning;
@@ -129,7 +139,7 @@ bin/reviewd comment --run RUN_ID
 ```
 
 Posts or updates one summary comment per PR/MR, owned by the bot user (from
-the lock, or `bot_user_id`) and identified by a stable
+the lock, or `auth.bot_user_id`) and identified by a stable
 `<!-- reviewd:summary ... -->` marker. Comments by any other author are never
 edited, even if they contain the marker. Set `publish.comments` to `post` to
 write; the default `shadow` prints the body. Posting is withheld when the PR head or target
@@ -158,7 +168,7 @@ lower findings in the summary only. Design:
 
 ### GitLab submission
 
-GitLab repositories may set `token_scheme` (`private-token` default, or
+GitLab repositories may set `auth.token_scheme` (`private-token` default, or
 `bearer`) and a `gitlab` section. `gitlab.required_jobs` defaults to the
 policy's `required_checks`. Without `mirror.sync`, mirrors must fetch
 `+refs/merge-requests/*/head:refs/merge-requests/*/head` and the target branch

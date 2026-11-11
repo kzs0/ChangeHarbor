@@ -38,6 +38,9 @@ type CommentContent struct {
 	ChangeKey, RunID, Head, Status               string
 	ModelRisk, Minimum, EffectiveRisk, Threshold int
 	Report                                       string
+	// NotReviewed counts files left out of a partial review for size. It
+	// must be positive for status "partial" and zero otherwise.
+	NotReviewed int
 }
 
 // RenderComment builds a comment body in which model-derived text cannot act:
@@ -49,6 +52,9 @@ func RenderComment(c CommentContent) (string, error) {
 	if !changeKeyPattern.MatchString(c.ChangeKey) || !tokenPattern.MatchString(c.RunID) || !hexPattern.MatchString(c.Head) || !statusPattern.MatchString(c.Status) {
 		return "", errors.New("invalid comment header facts")
 	}
+	if c.NotReviewed < 0 || (c.Status == "partial") != (c.NotReviewed > 0) {
+		return "", errors.New("invalid partial review file count")
+	}
 	var h strings.Builder
 	fmt.Fprintf(&h, "%s\n%s\n### reviewd review (advisory)\n\n", SummaryMarker(c.ChangeKey), RunMarker(c.RunID))
 	fmt.Fprintf(&h, "Reviewed commit: `%s` · Status: `%s` · ", c.Head[:min(12, len(c.Head))], c.Status)
@@ -56,6 +62,9 @@ func RenderComment(c CommentContent) (string, error) {
 		fmt.Fprintf(&h, "Merge risk: model %d/10, enforced minimum %d/10, effective %d/10, threshold %d/10\n\n", c.ModelRisk, c.Minimum, c.EffectiveRisk, c.Threshold)
 	} else {
 		fmt.Fprintf(&h, "Effective merge risk: unknown (minimum %d/10, threshold %d/10)\n\n", c.Minimum, c.Threshold)
+	}
+	if c.NotReviewed > 0 {
+		fmt.Fprintf(&h, "Partial review: %d changed file(s) were too large for the model's request budget and were not reviewed; they are listed in the report. Approval is withheld for partial reviews.\n\n", c.NotReviewed)
 	}
 	h.WriteString("Approval is decided separately by host policy; this comment never approves or merges.\n\n")
 	report := clean(c.Report)

@@ -16,18 +16,22 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kzs0/bedrock"
 	"github.com/kzs0/reviewd/internal/archive"
+	"github.com/kzs0/reviewd/internal/config"
 	"github.com/kzs0/reviewd/internal/contextbuild"
 	"github.com/kzs0/reviewd/internal/contextpack"
 	"github.com/kzs0/reviewd/internal/evaluate"
+	gh "github.com/kzs0/reviewd/internal/forge/github"
 	gitreader "github.com/kzs0/reviewd/internal/git"
 	"github.com/kzs0/reviewd/internal/jobs"
 	"github.com/kzs0/reviewd/internal/journal"
 	"github.com/kzs0/reviewd/internal/mergeingest"
 	"github.com/kzs0/reviewd/internal/model"
 	riskpolicy "github.com/kzs0/reviewd/internal/policy"
+	"github.com/kzs0/reviewd/internal/publish"
 	"github.com/kzs0/reviewd/internal/release"
 	"github.com/kzs0/reviewd/internal/review"
 	"github.com/kzs0/reviewd/internal/statelock"
@@ -100,20 +104,41 @@ func modelFor(ctx context.Context, configPath, responsePath, state, runID string
 	if (configPath == "") == (responsePath == "") {
 		return nil, nil, errors.New("provide exactly one of --response and --model-config")
 	}
-	if configPath == "" {
+	c, e := loadModelConfig(configPath, nil)
+	if e != nil {
+		return nil, nil, e
+	}
+	return modelForConfig(ctx, c, responsePath, state, runID)
+}
+
+// loadModelConfig returns inline, or loads the JSON or YAML file at path;
+// nil when neither is set.
+func loadModelConfig(path string, inline *model.HTTPConfig) (*model.HTTPConfig, error) {
+	if inline != nil {
+		c := *inline
+		return &c, nil
+	}
+	if path == "" {
+		return nil, nil
+	}
+	c, e := config.LoadModelConfig(path)
+	if e != nil {
+		return nil, e
+	}
+	return &c, nil
+}
+
+// modelForConfig is modelFor with a loaded model config (nil: use the
+// offline response).
+func modelForConfig(ctx context.Context, c *model.HTTPConfig, responsePath, state, runID string) (model.Model, func(), error) {
+	if (c == nil) == (responsePath == "") {
+		return nil, nil, errors.New("provide exactly one of --response and --model-config")
+	}
+	if c == nil {
 		b, e := os.ReadFile(responsePath)
 		return &model.Fake{Response: model.Response{Raw: b}}, func() {}, e
 	}
-	f, e := os.Open(configPath)
-	if e != nil {
-		return nil, nil, e
-	}
-	defer f.Close()
-	c, e := model.DecodeHTTPConfig(f)
-	if e != nil {
-		return nil, nil, e
-	}
-	m, e := model.NewHTTP(c)
+	m, e := model.NewHTTP(*c)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -195,11 +220,16 @@ func extraCommand(ctx context.Context, args []string) (int, error) {
 		return 0, emit(w)
 	case "explain":
 		id := f.String("run", "", "durable ID or saved JSON file")
+		cfg := f.String("config", "", "changeharbor.yaml whose state to read (default $CHANGEHARBOR_CONFIG, then ./changeharbor.yaml if present)")
 		if f.Parse(args[1:]) != nil || *id == "" {
 			return 2, nil
 		}
+		dir, e := explainState(f, *state, *cfg)
+		if e != nil {
+			return 2, e
+		}
 		var v any
-		if e := loadRun(ctx, *state, *id, &v); e != nil {
+		if e := loadRun(ctx, dir, *id, &v); e != nil {
 			return 1, e
 		}
 		return 0, emit(v)
@@ -249,7 +279,15 @@ type repositoryConfig struct {
 	ForgeConfig string `json:"forge_config"`
 
 	forge *forgeConfig // compiled from changeharbor.yaml
+	// Inline model configs from changeharbor.yaml; they replace
+	// ModelConfig and SummaryModelConfig.
+	inlineModel, inlineSummaryModel *model.HTTPConfig
 }
+
+func (r repositoryConfig) hasSummaryModel() bool {
+	return r.SummaryModelConfig != "" || r.inlineSummaryModel != nil
+}
+
 type serverConfig struct {
 	ContextRebuildInterval string                      `json:"context_rebuild_interval"`
 	ReconciliationInterval string                      `json:"reconciliation_interval"`
@@ -260,6 +298,32 @@ type serverConfig struct {
 	GitLabSecretEnv        string                      `json:"gitlab_secret_env"`
 }
 
+// explainState picks the state directory like other commands do: --state,
+// then $CHANGEHARBOR_STATE, then the config file's state (--config,
+// $CHANGEHARBOR_CONFIG, or ./changeharbor.yaml when present), then .reviewd.
+func explainState(f *flag.FlagSet, state, cfg string) (string, error) {
+	set := false
+	f.Visit(func(x *flag.Flag) { set = set || x.Name == "state" })
+	if set {
+		return state, nil
+	}
+	if env := os.Getenv("CHANGEHARBOR_STATE"); env != "" {
+		return env, nil
+	}
+	path := configPath(cfg)
+	if _, e := os.Stat(path); e != nil {
+		if cfg != "" || os.Getenv("CHANGEHARBOR_CONFIG") != "" {
+			return "", e
+		}
+		return state, nil
+	}
+	s, _, e := loadSettingsFile(path)
+	if e != nil {
+		return "", e
+	}
+	return filepath.Abs(s.State)
+}
+
 func (c serverConfig) validate() error {
 	if _, e := rebuildInterval(c); e != nil {
 		return e
@@ -268,7 +332,7 @@ func (c serverConfig) validate() error {
 		return e
 	}
 	for key, repo := range c.Repositories {
-		if (repo.SummaryModelConfig == "") != (repo.SummaryLimits == nil) {
+		if repo.hasSummaryModel() != (repo.SummaryLimits != nil) {
 			return errors.New("background summary model and separate limits must be configured together")
 		}
 		if key == "" || repo.Path == "" || repo.Branch == "" {
@@ -318,7 +382,7 @@ func serve(ctx context.Context, c serverConfig) (int, error) {
 	workerFinished := make(chan struct{})
 	go func() {
 		defer close(workerFinished)
-		workerDone <- worker.Run(workCtx, q, worker.RunOptions{WorkerID: "reviewd-local", PollInterval: time.Second, Lease: 30 * time.Second, JobTimeout: 5 * time.Minute, MaxAttempts: 2}, func(ctx context.Context, j jobs.Job, b []byte) error { return processEvent(ctx, c, j, b) })
+		workerDone <- worker.Run(workCtx, q, worker.RunOptions{WorkerID: "reviewd-local", PollInterval: time.Second, Lease: 30 * time.Second, JobTimeout: 5 * time.Minute, MaxAttempts: serviceMaxAttempts}, func(ctx context.Context, j jobs.Job, b []byte) error { return serviceProcess(ctx, c, j, b, os.Stderr) })
 	}()
 	defer func() {
 		cancelWorker()
@@ -360,9 +424,11 @@ func serve(ctx context.Context, c serverConfig) (int, error) {
 	handler := worker.NewHandler(q, worker.Options{GitHubSecret: os.Getenv(c.GitHubSecretEnv), GitLabSecret: os.Getenv(c.GitLabSecretEnv), MaxBytes: 1 << 20})
 	mux := http.NewServeMux()
 	mux.Handle("/webhooks/", handler)
+	health := healthStatus(c)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"status":"ok","mode":"shadow","processing":"durable_shadow_worker"}`)
+		b, _ := json.Marshal(health)
+		w.Write(b)
 	})
 	server := &http.Server{Addr: c.Address, Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
 	done := make(chan error, 1)
@@ -511,8 +577,10 @@ func processEvent(ctx context.Context, c serverConfig, j jobs.Job, b []byte) err
 	if !ok || o.Path == "" || o.Branch == "" {
 		return errors.New("repository has no trusted local mapping")
 	}
-	if event.Branch != o.Branch {
-		return errors.New("event targets an unconfigured branch")
+	if event.CommentID == "" && event.Branch != o.Branch {
+		// Pushes to and changes into other branches are expected
+		// deliveries, not failures: acknowledge them and do nothing.
+		return nil
 	}
 	forge := o.forge
 	if forge == nil && o.ForgeConfig != "" {
@@ -534,13 +602,16 @@ func processEvent(ctx context.Context, c serverConfig, j jobs.Job, b []byte) err
 		}
 		return nil
 	}
+	if event.Kind == "review" && event.CommentID != "" {
+		return reviewCommandEvent(ctx, c, o, forge, j, event)
+	}
 	if event.Kind == "review" && forge != nil {
 		// Withdraw any approval for an older head before reviewing the new
 		// one, whatever the forge's own reset-on-push settings.
 		if e := revalidateEvent(ctx, c, *forge, event.ChangeNumber); e != nil {
 			return e
 		}
-		return automateChange(ctx, c, o, *forge, event.ChangeNumber)
+		return automateChange(ctx, c, o, *forge, event.ChangeNumber, j.Attempts, "")
 	}
 	if event.Kind != "review" {
 		return errors.New("unsupported durable job kind")
@@ -586,6 +657,33 @@ func processEvent(ctx context.Context, c serverConfig, j jobs.Job, b []byte) err
 	return saveAndAnnounce(ctx, c.State, "review", r)
 }
 
+// serviceProcess runs one durable job and logs a failure as one line: job
+// ID, kind, change, attempt and, once the change was captured, the run ID
+// and reason a status comment names. Errors carry no credentials or
+// provider bodies; control characters are removed and the text is capped.
+func serviceProcess(ctx context.Context, c serverConfig, j jobs.Job, b []byte, log io.Writer) error {
+	e := processEvent(ctx, c, j, b)
+	if e == nil {
+		return nil
+	}
+	line := fmt.Sprintf("job %s failed (kind %s, change %s, attempt %d/%d)", j.ID, j.Kind, j.ChangeID, j.Attempts, serviceMaxAttempts)
+	var f *reviewFailure
+	if errors.As(e, &f) {
+		line += fmt.Sprintf(": run %s, reason %s", f.RunID, f.Reason)
+	}
+	msg := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, e.Error())
+	if len(msg) > 300 {
+		msg = strings.ToValidUTF8(msg[:300], "") + "..."
+	}
+	fmt.Fprintf(log, "%s: %s\n", line, msg)
+	return e
+}
+
 func ingestEvent(ctx context.Context, c serverConfig, o repositoryConfig, event worker.Event) error {
 	s, e := storage.Open(c.State)
 	if e != nil {
@@ -600,21 +698,42 @@ func ingestEvent(ctx context.Context, c serverConfig, o repositoryConfig, event 
 	return e
 }
 
+// serviceMaxAttempts is how often the service tries a job. A job's final
+// attempt that fails after capture leaves a review_failed status comment.
+const serviceMaxAttempts = 2
+
 // automateChange runs the forge flow for one change under the service's
 // state lock: review from API-captured revisions (the webhook only names the
 // change), then comment and publish as the forge configuration allows.
-func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc forgeConfig, number int) error {
+// Unless commandID names an accepted review command, review.auto may skip
+// the change. A command's ID is part of the review's input identity, so it
+// is a fresh model request rather than a replay of an earlier one.
+func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc forgeConfig, number, attempts int, commandID string) error {
 	if number <= 0 {
 		return errors.New("event has no change number")
 	}
-	id, result, _, e := forgeReview(ctx, fc, changeURL(fc, number), reviewOptions{State: c.State, Response: o.Response, ModelConfig: o.ModelConfig, Minimum: 1, Threshold: 3, Cap: 1 << 20})
+	key := fmt.Sprintf("%s:%s:%d", fc.Provider, fc.RepositoryID, number)
+	if commandID == "" {
+		facts, head, e := liveFacts(ctx, fc, number)
+		if e != nil {
+			return e
+		}
+		if reason := autoSkipReason(fc, facts); reason != "" {
+			fmt.Fprintf(os.Stderr, "skipped automatic review of %s: %s\n", key, reason)
+			return saveRecord(ctx, c.State, "review_skip", key, struct{ Reason, Head string }{reason, head})
+		}
+	}
+	id, result, _, e := forgeReview(ctx, fc, changeURL(fc, number), reviewOptions{State: c.State, Response: o.Response, ModelConfig: o.ModelConfig, InlineModel: o.inlineModel, Minimum: 1, Threshold: 3, CommandID: commandID})
 	if e != nil {
+		var f *reviewFailure
+		if errors.As(e, &f) && attempts >= serviceMaxAttempts && fc.CommentMode == "post" {
+			if err := failureComment(ctx, c, fc, key, f); err != nil {
+				return errors.Join(e, err)
+			}
+		}
 		return e
 	}
 	fmt.Fprintln(os.Stderr, "saved forge review:", id)
-	if result.Status != "completed" {
-		return nil
-	}
 	s, e := storage.Open(c.State)
 	if e != nil {
 		return e
@@ -625,12 +744,155 @@ func automateChange(ctx context.Context, c serverConfig, o repositoryConfig, fc 
 			return e
 		}
 	}
-	if fc.Mode == "submit" {
+	// Only complete reviews can be approved; others are never published.
+	if fc.Mode == "submit" && result.Status == "completed" {
 		if _, _, e = publishRun(ctx, fc, s, id); e != nil {
 			return e
 		}
 	}
 	return nil
+}
+
+// failureComment publishes a review_failed status comment for the final
+// failed attempt. It renders only the reason code, never the error.
+func failureComment(ctx context.Context, c serverConfig, fc forgeConfig, key string, f *reviewFailure) error {
+	body, e := publish.RenderStatus(publish.StatusContent{ChangeKey: key, RunID: f.RunID, Head: f.Capture.Head, Status: "review_failed", Reason: f.Reason, BotUsername: fc.BotUsername, Provider: fc.Provider})
+	if e != nil {
+		return e
+	}
+	s, e := storage.Open(c.State)
+	if e != nil {
+		return e
+	}
+	defer s.Close()
+	_, _, e = postSummary(ctx, fc, s, f.RunID, key, forgeProvenance{Capture: f.Capture}, body)
+	return e
+}
+
+// liveFacts reads the change's trigger facts and head from the forge API.
+func liveFacts(ctx context.Context, fc forgeConfig, number int) (changeFacts, string, error) {
+	if fc.Provider == "gitlab" {
+		ch, e := gitlabClient(fc).Change(ctx, fc.ProjectID, number)
+		return changeFacts{Draft: ch.Draft, Author: ch.Author, Title: ch.Title, Labels: ch.Labels}, ch.HeadOID, e
+	}
+	ch, e := githubClient(fc).Change(ctx, fc.Owner, fc.Repository, number)
+	return changeFacts{Draft: ch.Draft, Author: ch.Author, Title: ch.Title, Labels: ch.Labels}, ch.HeadOID, e
+}
+
+func saveRecord(ctx context.Context, state, kind, key string, v any) error {
+	s, e := storage.Open(state)
+	if e != nil {
+		return e
+	}
+	defer s.Close()
+	b, e := json.Marshal(v)
+	if e != nil {
+		return e
+	}
+	return s.Save(ctx, kind, key, b)
+}
+
+// reviewCommandEvent handles an "@bot review" comment. The payload only
+// names the comment: its body, author and standing are read from the API.
+// Every outcome is recorded; ignored commands are silent and not retried.
+func reviewCommandEvent(ctx context.Context, c serverConfig, o repositoryConfig, fc *forgeConfig, j jobs.Job, event worker.Event) error {
+	record := func(reason string) error {
+		return saveRecord(ctx, c.State, "review_command", j.ID, struct {
+			Accepted bool
+			Reason   string
+		}{reason == "", reason})
+	}
+	if fc == nil {
+		return record("no_forge_config")
+	}
+	reason, e := commandRejection(ctx, *fc, event)
+	if e != nil {
+		return e
+	}
+	if e = record(reason); e != nil || reason != "" {
+		return e
+	}
+	if e = revalidateEvent(ctx, c, *fc, event.ChangeNumber); e != nil {
+		return e
+	}
+	return automateChange(ctx, c, o, *fc, event.ChangeNumber, j.Attempts, event.CommentID)
+}
+
+// commandRejection returns why a review command is ignored, or "".
+func commandRejection(ctx context.Context, fc forgeConfig, event worker.Event) (string, error) {
+	var body, authorID, login string
+	level := 0
+	if fc.Provider == "github" {
+		x, e := githubClient(fc).IssueComment(ctx, fc.Owner, fc.Repository, event.CommentID)
+		if e != nil {
+			return "", e
+		}
+		if x.IssueNumber != event.ChangeNumber {
+			return "comment_mismatch", nil
+		}
+		body, authorID, login = x.Body, x.AuthorID, x.AuthorLogin
+		if fc.BotUsername != "" && strings.EqualFold(strings.TrimSuffix(strings.ToLower(x.AuthorLogin), "[bot]"), strings.TrimSuffix(strings.ToLower(fc.BotUsername), "[bot]")) {
+			return "bot_author", nil
+		}
+	} else {
+		x, e := gitlabClient(fc).Note(ctx, fc.ProjectID, event.ChangeNumber, event.CommentID)
+		if e != nil {
+			return "", e
+		}
+		if x.System {
+			return "system_note", nil
+		}
+		body, authorID = x.Body, x.AuthorID
+	}
+	if fc.BotUserID != "" && authorID == fc.BotUserID {
+		return "bot_author", nil
+	}
+	if fc.BotUsername == "" && worker.CommandPrefilter(fc.Provider, body) && !parseReviewCommand(fc.Provider, body, "") {
+		return "bot_username_unknown", nil
+	}
+	if !parseReviewCommand(fc.Provider, body, fc.BotUsername) {
+		return "not_a_command", nil
+	}
+	if fc.Provider == "gitlab" {
+		var e error
+		if level, e = gitlabClient(fc).AccessLevel(ctx, fc.ProjectID, authorID); e != nil {
+			return "", e
+		}
+		if !commandAuthorized(fc.Provider, "", level) {
+			return "unauthorized", nil
+		}
+	} else {
+		// author_association is not reliable for private organisation
+		// members; the author's repository permission decides.
+		if !gh.ValidLogin(login) {
+			return "unauthorized", nil
+		}
+		p, e := githubClient(fc).CollaboratorPermission(ctx, fc.Owner, fc.Repository, login)
+		if e != nil {
+			return "", e
+		}
+		if !githubPermissionAuthorized(p.Permission, p.RoleName) {
+			return "unauthorized", nil
+		}
+	}
+	branch := ""
+	if fc.Provider == "gitlab" {
+		ch, e := gitlabClient(fc).Change(ctx, fc.ProjectID, event.ChangeNumber)
+		if e != nil {
+			return "", e
+		}
+		branch = ch.TargetBranch
+	} else {
+		ch, e := githubClient(fc).Change(ctx, fc.Owner, fc.Repository, event.ChangeNumber)
+		if e != nil {
+			return "", e
+		}
+		branch = ch.TargetBranch
+	}
+	if branch != fc.Branch {
+		return "branch_mismatch", nil
+	}
+	return "", nil
 }
 
 func revalidateEvent(ctx context.Context, c serverConfig, fc forgeConfig, only int) error {

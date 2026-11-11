@@ -56,7 +56,7 @@ func TestYAMLRejectsAmbiguousConstructs(t *testing.T) {
 		{"duplicate key", strings.Replace(base, "version: 1", "version: 1\nversion: 1", 1), "duplicate key"},
 		{"second document", base + "---\nversion: 1\n", "exactly one YAML document"},
 		{"typo still suggested", strings.Replace(base, "ci_trust:", "ci_trus:", 1), `repositories.app.gitlab.ci_trus: unknown key; did you mean "ci_trust"?`},
-		{"list where text expected", strings.Replace(base, "policy: policies/app.json", "policy: [a, b]", 1), "repositories.app.policy: must be text"},
+		{"list where text expected", strings.Replace(base, "token_env: GITLAB_TOKEN", "token_env: [a, b]", 1), "repositories.app.token_env: must be text"},
 		{"text where number expected", strings.Replace(base, "version: 1", `version: "1"`, 1), "version: must be a number"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

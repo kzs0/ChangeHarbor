@@ -39,6 +39,11 @@ func RenderReview(r review.Result) (ReviewReports, error) {
 			fmt.Fprintf(&b, "Excluded by trusted policy: %s\n", path)
 		}
 	}
+	for _, v := range r.Package.Coverage {
+		if path, ok := strings.CutPrefix(v.ID, "file:"); ok && v.Status == "not_included_budget" {
+			fmt.Fprintf(&b, "Not reviewed (too large): %s\n", path)
+		}
+	}
 	for _, f := range r.Review.Findings {
 		fmt.Fprintf(&b, "Finding [%s/%s]: %s\nTrigger: %s\nConsequence: %s\n", f.Severity, f.Category, f.Title, f.Trigger, f.Consequence)
 		if f.Path != "" {

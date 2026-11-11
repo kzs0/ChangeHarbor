@@ -17,7 +17,8 @@ models:
 repositories:
   app:
     url: https://gitlab.com/group/app
-    token_env: GITLAB_TOKEN
+    auth:
+      token_env: GITLAB_TOKEN
     mirror:
       path: /srv/mirrors/app.git
     policy: policies/app.json
@@ -34,10 +35,91 @@ reviewd serve --config /etc/changeharbor/changeharbor.yaml
 
 | Event | Action |
 | --- | --- |
-| MR/PR opened or updated | Withdraw ChangeHarbor's approval of an older head, then capture from the API, sync the mirror, review, and comment and approve per `publish`. |
+| MR/PR opened, reopened, new commits, marked ready, or retargeted | Withdraw ChangeHarbor's approval of an older head, apply [`triggers`](#automatic-reviews), then capture from the API, sync the mirror, review, and comment and approve per `publish`. |
+| `@<bot_username> review` comment (GitHub also `/changeharbor review`) | The same, but `triggers` are bypassed. See [Ask for a review](#ask-for-a-review). |
 | Push to the configured branch | Update the change journal, then withdraw approvals whose target moved. |
 
-Webhook payloads only *name* the change. Commits always come from the API.
+In `shadow` the service reviews and saves the result but posts nothing, and
+with `publish.approvals: shadow` it doesn't evaluate the approval either. To
+see what it would post or approve, run `reviewd comment` and `reviewd
+publish` by hand, as described in the [rollout checklist](rollout.md).
+
+Other MR/PR events (labels, title or description edits, approvals) don't start
+a review. Webhook payloads only *name* the change or the comment. Commits,
+draft state, labels, authors and comment text always come from the API.
+
+## Automatic reviews
+
+By default drafts are skipped. `triggers` adds more rules:
+
+```yaml
+# changeharbor.yaml
+version: 1
+repositories:
+  app:
+    url: https://gitlab.com/group/app
+    auth:
+      token_env: GITLAB_TOKEN
+    mirror:
+      path: /srv/mirrors/app.git
+    policy: policies/app.json
+    triggers:
+      drafts: skip
+      ignore_authors: ["dependabot[bot]", "renovate*"]
+      skip_labels: ["skip-review"]
+      skip_title_keywords: ["[skip review]"]
+```
+
+A skipped change gets no review, no comment and no approval; stale approvals
+are still withdrawn. The service logs
+`skipped automatic review of gitlab:9:7: draft` and records it in state.
+Removing a skip label or keyword takes effect on the next push, or ask for a
+review.
+
+## Ask for a review
+
+A comment whose first line is exactly `@<bot_username> review` reviews the
+change's current head again, drafts and skip rules included. On GitHub,
+`/changeharbor review` also works. Later lines are ignored, so you can add a
+reason. The comment's author needs write access: on GitHub the Write,
+Maintain or Admin role on the repository (or a custom role based on Write),
+read from the repository permission API rather than the comment's
+association; on GitLab Developer or above. Other comments, and the bot's own,
+are ignored silently; every decision is recorded in state as
+`review_command`. A command is never dropped in favour of a newer event for
+the same change.
+
+A command is an explicit retry: it always makes a fresh model request, even
+for a commit whose earlier request failed, timed out or was rejected, and
+even if that commit was already reviewed. The command's comment ID is part
+of the request's identity and is recorded with the run. Nothing else repeats
+a request: an automatic event for an unchanged head reuses the earlier reply,
+an earlier request whose outcome is unknown is never replayed by an event or
+by the service retrying a job, and a re-delivered command comment makes no
+second request. Each command is billed like any review.
+
+The bot's username comes from `auth.bot_username` or the lock, where
+`reviewd config resolve` records it (`<slug>[bot]` for a GitHub App). A
+trailing `[bot]` is optional when you type the command. Subscribe the
+webhook to comments: GitHub *Issue comments*, GitLab *Comments*.
+
+## When a review doesn't complete
+
+With `publish.comments: post` the owned summary comment says what happened,
+why and what to do, for example that the diff is too large for the model's
+request budget or the model's reply was rejected. It shows only a reason code
+(such as `required_input_omitted` or `model_request_failed`) and the run ID,
+never error text. If the model call or the mirror fails, the comment is left
+after the job's second and last attempt. Nothing is approved, and inline
+comments are left as they were. The next completed review replaces the
+comment. [What a review looks like](../getting-started/what-a-review-looks-like.md#when-a-review-doesnt-complete)
+shows each one.
+
+For large changes, `review.large_changes: partial` reviews as many whole files
+as fit and lists the rest. The request budget comes from the model config
+(`limits.max_request_bytes`, context and token caps, cost cap), so a larger
+model takes larger changes. [Model providers](../configuration/providers.md#how-big-a-change-fits)
+shows how it's computed.
 
 ## Expose it safely
 
@@ -54,6 +136,10 @@ changeharbor.example.com {
 Webhooks are authenticated by GitHub's HMAC signature or GitLab's secret
 token. Receipts are stored durably before they are acknowledged.
 
+`/health` reports each repository's write modes. See
+[Operating ChangeHarbor](../operations/operating.md#health) for the payload. The modes
+are read when the service starts; restart it after changing the configuration.
+
 ## Keep it running
 
 ```ini
@@ -64,6 +150,7 @@ After=network-online.target
 
 [Service]
 User=changeharbor
+StateDirectory=changeharbor
 EnvironmentFile=/etc/changeharbor/secrets.env
 ExecStart=/usr/local/bin/reviewd serve --config /etc/changeharbor/changeharbor.yaml
 Restart=on-failure
@@ -73,7 +160,27 @@ WantedBy=multi-user.target
 ```
 
 `secrets.env` holds the tokens, webhook secrets and model key named in the
-config.
+config; make it readable by root only (systemd reads it before dropping
+privileges). `StateDirectory` creates `/var/lib/changeharbor` owned by the
+service user. The mirror paths must be writable by that user too.
+
+```sh
+sudo useradd --system --home-dir /var/lib/changeharbor --shell /usr/sbin/nologin changeharbor
+sudo install -d -o changeharbor -g changeharbor /srv/mirrors
+sudo systemctl daemon-reload
+sudo systemctl enable --now changeharbor
+journalctl -u changeharbor -f
+```
+
+A GitHub App private key spans several lines, so keep it out of
+`secrets.env`. Let systemd hand it to the service as a credential and export
+it in the start command (`$$` is systemd's escape for a literal `$`):
+
+```ini
+[Service]
+LoadCredential=app.pem:/etc/changeharbor/app.pem
+ExecStart=/bin/sh -c 'CHANGEHARBOR_APP_KEY="$$(cat "$${CREDENTIALS_DIRECTORY}/app.pem")" exec /usr/local/bin/reviewd serve --config /etc/changeharbor/changeharbor.yaml'
+```
 
 ## One writer per state directory
 
@@ -82,12 +189,7 @@ and `revalidate` against the same state fail with *another reviewd instance
 holds the state lock*. `doctor` and `config check` still work. Run one service
 per state directory.
 
-## Backups
+## Logs, upgrades and backups
 
-```sh
-reviewd backup --state /var/lib/changeharbor --output /backups/changeharbor.tar
-reviewd restore --input /backups/changeharbor.tar --state /var/lib/changeharbor-restored
-```
-
-Restore needs an empty destination and verifies every artifact and the SQLite
-databases.
+See [Operating ChangeHarbor](../operations/operating.md). To run in a
+container instead of under systemd, see [Run in a container](container.md).

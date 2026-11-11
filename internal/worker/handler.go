@@ -95,6 +95,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(202)
 }
+
+// CommandPrefilter reports whether a comment body might be a review
+// command: its first non-blank line has exactly two fields, the second
+// "review" and the first a mention (or, on GitHub, /changeharbor). It only
+// saves jobs; the API copy of the comment is authoritative.
+func CommandPrefilter(provider, body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		if len(f) != 2 || !strings.EqualFold(f[1], "review") {
+			return false
+		}
+		if len(f[0]) > 1 && f[0][0] == '@' {
+			return true
+		}
+		return provider == "github" && strings.EqualFold(f[0], "/changeharbor")
+	}
+	return false
+}
+
+func parseTime(v string) (time.Time, error) {
+	t, e := time.Parse(time.RFC3339, v)
+	if e != nil {
+		t, e = time.Parse("2006-01-02 15:04:05 MST", v)
+	}
+	return t, e
+}
+
 func normalize(provider, event, key string, b []byte) ([]jobs.Job, error) {
 	var x struct {
 		Action      string
@@ -105,21 +135,45 @@ func normalize(provider, event, key string, b []byte) ([]jobs.Job, error) {
 			UpdatedAt string `json:"updated_at"`
 			Head      struct{ SHA string }
 		} `json:"pull_request"`
-		Ref, After string
-		Project    struct{ ID int64 }
-		Attributes struct {
+		Changes struct {
+			Base           json.RawMessage          `json:"base"`
+			Draft          *struct{ Current *bool } `json:"draft"`
+			WorkInProgress *struct{ Current *bool } `json:"work_in_progress"`
+			TargetBranch   json.RawMessage          `json:"target_branch"`
+		} `json:"changes"`
+		Issue *struct {
+			Number      int
+			PullRequest json.RawMessage `json:"pull_request"`
+		} `json:"issue"`
+		Comment *struct {
+			ID        int64
+			Body      string
+			CreatedAt string `json:"created_at"`
+		} `json:"comment"`
+		MergeRequest *struct{ IID int } `json:"merge_request"`
+		Ref, After   string
+		Project      struct{ ID int64 }
+		Attributes   struct {
+			ID            int64
 			IID           int
 			State, Action string
+			Note          string
+			NoteableType  string              `json:"noteable_type"`
+			OldRev        string              `json:"oldrev"`
 			UpdatedAt     string              `json:"updated_at"`
+			CreatedAt     string              `json:"created_at"`
 			LastCommit    struct{ ID string } `json:"last_commit"`
 		} `json:"object_attributes"`
 	}
 	if e := json.Unmarshal(b, &x); e != nil {
 		return nil, e
 	}
+	present := func(r json.RawMessage) bool { return len(r) > 0 && string(r) != "null" }
+	ready := func(c *struct{ Current *bool }) bool { return c != nil && c.Current != nil && !*c.Current }
 	kind := ""
 	change := ""
 	generation := 0
+	force := false // review commands are never superseded
 	if provider == "github" {
 		switch event {
 		case "pull_request":
@@ -127,9 +181,12 @@ func normalize(provider, event, key string, b []byte) ([]jobs.Job, error) {
 				return nil, fmt.Errorf("identity required")
 			}
 			change = fmt.Sprintf("github:%d:%d", x.Repository.ID, x.Number)
-			if x.Action == "closed" && x.PullRequest.Merged {
+			switch {
+			case x.Action == "closed" && x.PullRequest.Merged:
 				kind = "ingest"
-			} else if x.Action == "opened" || x.Action == "reopened" || x.Action == "synchronize" {
+			case x.Action == "opened" || x.Action == "reopened" || x.Action == "synchronize" || x.Action == "ready_for_review":
+				kind = "review"
+			case x.Action == "edited" && present(x.Changes.Base):
 				kind = "review"
 			}
 			if kind == "review" {
@@ -139,6 +196,18 @@ func normalize(provider, event, key string, b []byte) ([]jobs.Job, error) {
 				}
 				generation = int(t.Unix())
 			}
+		case "issue_comment":
+			if x.Action != "created" || x.Issue == nil || !present(x.Issue.PullRequest) || x.Comment == nil || !CommandPrefilter(provider, x.Comment.Body) {
+				return nil, nil
+			}
+			if x.Repository.ID <= 0 || x.Issue.Number <= 0 || x.Comment.ID <= 0 {
+				return nil, fmt.Errorf("identity required")
+			}
+			t, e := time.Parse(time.RFC3339, x.Comment.CreatedAt)
+			if e != nil {
+				return nil, e
+			}
+			change, kind, generation, force = fmt.Sprintf("github:%d:%d", x.Repository.ID, x.Issue.Number), "review", int(t.Unix()), true
 		case "push":
 			if x.Repository.ID <= 0 || x.Ref == "" || x.After == "" {
 				return nil, fmt.Errorf("push identity required")
@@ -157,18 +226,36 @@ func normalize(provider, event, key string, b []byte) ([]jobs.Job, error) {
 			if x.Attributes.State == "merged" || x.Attributes.Action == "merge" {
 				kind = "ingest"
 			} else if x.Attributes.State == "opened" {
-				kind = "review"
+				switch x.Attributes.Action {
+				case "", "open", "reopen":
+					kind = "review"
+				case "update":
+					// Only new commits, readiness or a retarget change what
+					// would be reviewed or whether it is reviewed.
+					if x.Attributes.OldRev != "" || ready(x.Changes.Draft) || ready(x.Changes.WorkInProgress) || present(x.Changes.TargetBranch) {
+						kind = "review"
+					}
+				}
 			}
 			if kind == "review" {
-				t, e := time.Parse(time.RFC3339, x.Attributes.UpdatedAt)
-				if e != nil {
-					t, e = time.Parse("2006-01-02 15:04:05 MST", x.Attributes.UpdatedAt)
-				}
+				t, e := parseTime(x.Attributes.UpdatedAt)
 				if e != nil {
 					return nil, e
 				}
 				generation = int(t.Unix())
 			}
+		case "Note Hook":
+			if x.Attributes.NoteableType != "MergeRequest" || (x.Attributes.Action != "" && x.Attributes.Action != "create") || !CommandPrefilter(provider, x.Attributes.Note) {
+				return nil, nil
+			}
+			if x.Project.ID <= 0 || x.MergeRequest == nil || x.MergeRequest.IID <= 0 || x.Attributes.ID <= 0 {
+				return nil, fmt.Errorf("identity required")
+			}
+			t, e := parseTime(x.Attributes.CreatedAt)
+			if e != nil {
+				return nil, e
+			}
+			change, kind, generation, force = fmt.Sprintf("gitlab:%d:%d", x.Project.ID, x.MergeRequest.IID), "review", int(t.Unix()), true
 		case "Push Hook":
 			if x.Project.ID <= 0 || x.Ref == "" || x.After == "" {
 				return nil, fmt.Errorf("push identity required")
@@ -180,5 +267,5 @@ func normalize(provider, event, key string, b []byte) ([]jobs.Job, error) {
 	if kind == "" {
 		return nil, nil
 	}
-	return []jobs.Job{{ID: key, Key: key, ChangeID: change, Kind: kind, Generation: generation}}, nil
+	return []jobs.Job{{ID: key, Key: key, ChangeID: change, Kind: kind, Generation: generation, Force: force}}, nil
 }
